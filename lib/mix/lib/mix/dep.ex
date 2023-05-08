@@ -23,7 +23,7 @@ defmodule Mix.Dep do
     * `top_level` - true if dependency was defined in the top-level project
 
     * `manager` - the project management, possible values:
-      `:rebar` | `:rebar3` | `:mix` | `:make` | `nil`
+      `:rebar3` | `:mix` | `:make` | `nil`
 
     * `from` - path to the file where the dependency was defined
 
@@ -69,7 +69,7 @@ defmodule Mix.Dep do
           status: {:ok, String.t() | nil} | atom | tuple,
           opts: keyword,
           top_level: boolean,
-          manager: :rebar | :rebar3 | :mix | :make | nil,
+          manager: :rebar3 | :mix | :make | nil,
           from: String.t(),
           extra: term,
           system_env: keyword
@@ -249,18 +249,20 @@ defmodule Mix.Dep do
   def in_dependency(dep, post_config \\ [], fun)
 
   def in_dependency(%Mix.Dep{app: app, opts: opts, scm: scm}, config, fun) do
-    # Set the app_path to be the one stored in the dependency.
+    # Set the deps_app_path to be the one stored in the dependency.
     # This is important because the name of application in the
     # mix.exs file can be different than the actual name and we
     # choose to respect the one in the mix.exs
     config =
       Mix.Project.deps_config()
       |> Keyword.merge(config)
-      |> Keyword.put(:app_path, opts[:build])
       |> Keyword.put(:build_scm, scm)
+      |> Keyword.put(:deps_app_path, opts[:build])
 
-    config = Keyword.take(opts, [:inherit_parent_config_files]) ++ config
-
+    # If the dependency is not fetchable, then it is never compiled
+    # from scratch and therefore it needs the parent configuration
+    # files to know when to recompile.
+    config = [inherit_parent_config_files: not scm.fetchable?] ++ config
     env = opts[:env] || :prod
     old_env = Mix.env()
 
@@ -524,7 +526,7 @@ defmodule Mix.Dep do
   Returns `true` if dependency is a Rebar project.
   """
   def rebar?(%Mix.Dep{manager: manager}) do
-    manager in [:rebar, :rebar3]
+    manager == :rebar3
   end
 
   @doc """

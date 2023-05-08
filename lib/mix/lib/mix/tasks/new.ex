@@ -1,6 +1,5 @@
 defmodule Mix.Tasks.New do
   use Mix.Task
-
   import Mix.Generator
 
   @shortdoc "Creates a new Elixir project"
@@ -9,7 +8,7 @@ defmodule Mix.Tasks.New do
   Creates a new Elixir project.
   It expects the path of the project as argument.
 
-      mix new PATH [--app APP] [--module MODULE] [--sup] [--umbrella]
+      $ mix new PATH [--app APP] [--module MODULE] [--sup] [--umbrella]
 
   A project at the given PATH will be created. The
   application name and module name will be retrieved
@@ -28,24 +27,23 @@ defmodule Mix.Tasks.New do
   An `--umbrella` option can be given to generate an
   umbrella project.
 
-
   ## Examples
 
-      mix new hello_world
+      $ mix new hello_world
 
   Is equivalent to:
 
-      mix new hello_world --module HelloWorld
+      $ mix new hello_world --module HelloWorld
 
   To generate an app with a supervision tree and an application callback:
 
-      mix new hello_world --sup
+      $ mix new hello_world --sup
 
   To generate an umbrella application with sub applications:
 
-      mix new hello_world --umbrella
-      cd hello_world/apps
-      mix new child_app
+      $ mix new hello_world --umbrella
+      $ cd hello_world/apps
+      $ mix new child_app
 
   """
 
@@ -130,6 +128,22 @@ defmodule Mix.Tasks.New do
     |> Mix.shell().info()
   end
 
+  @doc """
+  Returns a list of reserved application names.
+  """
+  def reserved_application_names do
+    # 1. Command line flags with multiple args can conflict with application names
+    # 2. OTP names
+    # 3. Elixir names
+    ~w(boot_var compile config configfd env pa pz path run s setcookie)a ++
+      ~w(otp asn1 common_test compiler crypto debugger dialyzer diameter
+         edoc eldap erl_docgen erl_interface erts et eunit ftp hipe
+         inets jinterface kernel megaco mnesia observer odbc os_mon
+         parsetools public_key reltool runtime_tools sasl snmp ssh
+         ssl stdlib syntax_tools toolbar tools typer wx xmerl)a ++
+      ~w(eex elixir ex_unit iex logger mix)a
+  end
+
   defp sup_app(_mod, false), do: ""
   defp sup_app(mod, true), do: ",\n      mod: {#{mod}.Application, []}"
 
@@ -167,10 +181,9 @@ defmodule Mix.Tasks.New do
   end
 
   defp check_application_name!(name, inferred?) do
-    unless name =~ ~r/^[a-z][a-z0-9_]*$/ do
+    if message = invalid_app(name) || reserved_app(name) do
       Mix.raise(
-        "Application name must start with a lowercase ASCII letter, followed by " <>
-          "lowercase ASCII letters, numbers, or underscores, got: #{inspect(name)}" <>
+        message <>
           if inferred? do
             ". The application name is inferred from the path, if you'd like to " <>
               "explicitly name the application then use the \"--app APP\" option"
@@ -178,6 +191,21 @@ defmodule Mix.Tasks.New do
             ""
           end
       )
+    end
+  end
+
+  defp invalid_app(name) do
+    unless name =~ ~r/^[a-z][a-z0-9_]*$/ do
+      "Application name must start with a lowercase ASCII letter, followed by " <>
+        "lowercase ASCII letters, numbers, or underscores, got: #{inspect(name)}"
+    end
+  end
+
+  defp reserved_app(name) do
+    atom_name = String.to_atom(name)
+
+    if atom_name in reserved_application_names() or Application.ensure_loaded(atom_name) == :ok do
+      "Cannot use application name #{inspect(name)} because it is already used by Erlang/OTP or Elixir"
     end
   end
 
@@ -216,16 +244,19 @@ defmodule Mix.Tasks.New do
   end
 
   defp in_umbrella? do
-    apps = Path.dirname(File.cwd!())
+    Mix.Project.umbrella?() or
+      (
+        apps = Path.dirname(File.cwd!())
 
-    try do
-      Mix.Project.in_project(:umbrella_check, "../..", fn _ ->
-        path = Mix.Project.config()[:apps_path]
-        path && Path.expand(path) == apps
-      end)
-    catch
-      _, _ -> false
-    end
+        try do
+          Mix.Project.in_project(:umbrella_check, "../..", fn _ ->
+            path = Mix.Project.config()[:apps_path]
+            path && Path.expand(path) == apps
+          end)
+        catch
+          _, _ -> false
+        end
+      )
   end
 
   embed_template(:readme, """

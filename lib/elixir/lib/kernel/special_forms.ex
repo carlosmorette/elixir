@@ -182,7 +182,7 @@ defmodule Kernel.SpecialForms do
       <<1, 2, 3>>
 
   Elixir also accepts by default the segment to be a literal
-  string or a literal charlist, which are by default expanded to integers:
+  string which expands to integers:
 
       iex> <<0, "foo">>
       <<0, 102, 111, 111>>
@@ -246,20 +246,20 @@ defmodule Kernel.SpecialForms do
       iex> {name, species}
       {"Frank", "Walrus"}
 
-  The size can be a variable:
+  The size can be a variable or any valid guard expression:
 
       iex> name_size = 5
       iex> <<name::binary-size(name_size), " the ", species::binary>> = <<"Frank the Walrus">>
       iex> {name, species}
       {"Frank", "Walrus"}
 
-  And the variable can be defined in the match itself (prior to its use):
+  The size can access prior variables defined in the binary itself:
 
       iex> <<name_size::size(8), name::binary-size(name_size), " the ", species::binary>> = <<5, "Frank the Walrus">>
       iex> {name, species}
       {"Frank", "Walrus"}
 
-  However, the size cannot be defined in the match outside the binary/bitstring match:
+  However, it cannot access variables defined in the match outside of the binary/bitstring:
 
       {name_size, <<name::binary-size(name_size), _rest::binary>>} = {5, <<"Frank the Walrus">>}
       ** (CompileError): undefined variable "name_size" in bitstring segment
@@ -366,7 +366,7 @@ defmodule Kernel.SpecialForms do
 
   To learn more about specific optimizations and performance considerations,
   check out the
-  ["Constructing and matching binaries" chapter of the Erlang's Efficiency Guide](https://erlang.org/doc/efficiency_guide/binaryhandling.html).
+  ["Constructing and matching binaries" chapter of the Erlang's Efficiency Guide](https://www.erlang.org/doc/efficiency_guide/binaryhandling.html).
   """
   defmacro unquote(:<<>>)(args), do: error!([args])
 
@@ -604,11 +604,12 @@ defmodule Kernel.SpecialForms do
 
       import List
 
-  A developer can filter to import only macros or functions via
-  the only option:
+  A developer can filter to import only functions, macros, or sigils
+  (which can be functions or macros) via the `:only` option:
 
       import List, only: :functions
       import List, only: :macros
+      import Kernel, only: :sigils
 
   Alternatively, Elixir allows a developer to pass pairs of
   name/arities to `:only` or `:except` as a fine grained control
@@ -778,7 +779,7 @@ defmodule Kernel.SpecialForms do
 
       <<int::integer-little, rest::bits>> = bits
 
-  Read the documentation on the `Typespec` page and
+  Read the documentation on the [Typespecs page](typespecs.md) and
   `<<>>/1` for more information on typespecs and
   bitstrings respectively.
   """
@@ -959,7 +960,7 @@ defmodule Kernel.SpecialForms do
       import Math
       squared(5)
       x
-      ** (CompileError) undefined variable x or undefined function x/0
+      ** (CompileError) undefined variable "x"
 
   We can see that `x` did not leak to the user context. This happens
   because Elixir macros are hygienic, a topic we will discuss at length
@@ -1046,6 +1047,17 @@ defmodule Kernel.SpecialForms do
       ContextHygiene.write()
       ContextHygiene.read()
       #=> 1
+
+  The contexts of a variable is identified by the third element of the tuple.
+  The default context is `nil` and `quote` assigns another context to all
+  variables within:
+
+      quote(do: var)
+      #=> {:var, [], Elixir}
+
+  In case of variables returned by macros, there may also be a `:counter` key
+  in the metadata, which is used to further refine its contexts and guarantee
+  isolation between macro invocations as seen in the previous example.
 
   ## Hygiene in aliases
 
@@ -1211,6 +1223,14 @@ defmodule Kernel.SpecialForms do
   reported to where `defadd` was invoked. `location: :keep` affects
   only definitions inside the quote.
 
+  > #### `location: :keep` and unquote {: .warning}
+  >
+  > Do not use `location: :keep` if the function definition
+  > also `unquote`s some of the macro arguments. If you do so, Elixir
+  > will store the file definition of the current location but the
+  > unquoted arguments may contain line information of the macro caller,
+  > leading to erroneous stacktraces.
+
   ## Binding and unquote fragments
 
   Elixir quote/unquote mechanisms provide a functionality called
@@ -1309,11 +1329,13 @@ defmodule Kernel.SpecialForms do
         sum(1, value, 3)
       end
 
-  Which would then return:
+
+  Which the argument for the `:sum` function call is not the
+  expected result:
 
       {:sum, [], [1, {:value, [], Elixir}, 3]}
 
-  Which is not the expected result. For this, we use `unquote`:
+  For this, we use `unquote`:
 
       iex> value =
       ...>   quote do
@@ -1363,8 +1385,10 @@ defmodule Kernel.SpecialForms do
       iex> for n <- [1, 2, 3, 4], do: n * 2
       [2, 4, 6, 8]
 
-  A comprehension accepts many generators and filters. Enumerable
-  generators are defined using `<-`:
+  A comprehension accepts many generators and filters. `for` uses
+  the `<-` operator to extract values from the enumerable on its
+  right side and match them against the pattern on the left.
+  We call them generators:
 
       # A list generator:
       iex> for n <- [1, 2, 3, 4], do: n * 2
@@ -1379,6 +1403,10 @@ defmodule Kernel.SpecialForms do
       # A comprehension with a generator and a filter
       iex> for n <- [1, 2, 3, 4, 5, 6], rem(n, 2) == 0, do: n
       [2, 4, 6]
+
+  Filters must evaluate to truthy values (everything but `nil`
+  and `false`). If a filter is falsy, then the current value is
+  discarded.
 
   Generators can also be used to filter as it removes any value
   that doesn't match the pattern on the left side of `<-`:
@@ -1399,6 +1427,35 @@ defmodule Kernel.SpecialForms do
   Variable assignments inside the comprehension, be it in generators,
   filters or inside the block, are not reflected outside of the
   comprehension.
+
+  Variable assignments inside filters must still return a truthy value,
+  otherwise values are discarded. Let's see an example. Imagine you have
+  a keyword list where the key is a programming language and the value
+  is its direct parent. Then let's try to compute the grandparent of each
+  language. You could try this:
+
+      iex> languages = [elixir: :erlang, erlang: :prolog, prolog: nil]
+      iex> for {language, parent} <- languages, grandparent = languages[parent], do: {language, grandparent}
+      [elixir: :prolog]
+
+  Given the grandparents of Erlang and Prolog were nil, those values were
+  filtered out. If you don't want this behaviour, a simple option is to
+  move the filter inside the do-block:
+
+      iex> languages = [elixir: :erlang, erlang: :prolog, prolog: nil]
+      iex> for {language, parent} <- languages do
+      ...>   grandparent = languages[parent]
+      ...>   {language, grandparent}
+      ...> end
+      [elixir: :prolog, erlang: nil, prolog: nil]
+
+  However, such option is not always available, as you may have further
+  filters. An alternative is to convert the filter into a generator by
+  wrapping the right side of `=` in a list:
+
+      iex> languages = [elixir: :erlang, erlang: :prolog, prolog: nil]
+      iex> for {language, parent} <- languages, grandparent <- [languages[parent]], do: {language, grandparent}
+      [elixir: :prolog, erlang: nil, prolog: nil]
 
   ## The `:into` and `:uniq` options
 
@@ -1475,9 +1532,48 @@ defmodule Kernel.SpecialForms do
   defmacro for(args), do: error!([args])
 
   @doc """
-  Used to combine matching clauses.
+  Combine matching clauses.
 
-  Let's start with an example:
+  One of the ways to understand with is to show which code
+  patterns it improves. Imagine you have a map where the fields
+  `width` and `height` are optional and you want to compute its
+  area, as `{:ok, area}` or return `:error`. We could implement
+  this function as:
+
+      def area(map) do
+        case Map.fetch(opts, :width) do
+          {:ok, width} ->
+            case Map.fetch(opts, :height) do
+              {:ok, height} -> {:ok, width * height}
+              :error -> :error
+            end
+
+          :error ->
+            :error
+        end
+      end
+
+  when called as `area(%{width: 10, height: 15})`, it should return
+  `{:ok, 150}`. If any of the fields are missing, it returns `:error`.
+
+  While the code above works, it is quite verbose. Using `with`,
+  we could rewrite it as:
+
+      def area(map) do
+        with {:ok, width} <- Map.fetch(opts, :width),
+             {:ok, height} <- Map.fetch(opts, :height) do
+          {:ok, width * height}
+        end
+      end
+
+  Instead of defining nested `case`s with clauses, we use `with`
+  alongside the `PATTERN <- EXPRESSION` operator to match
+  expressions on its right side against the pattern on the left.
+  Consider `<-` as a sibling to `=`, except that, while `=` raises
+  in case of not matches, `<-` will simply abort the `with` chain
+  and return the non-matched value.
+
+  Let's give it a try on IEx:
 
       iex> opts = %{width: 10, height: 15}
       iex> with {:ok, width} <- Map.fetch(opts, :width),
@@ -1504,7 +1600,9 @@ defmodule Kernel.SpecialForms do
       ...> end
       {:ok, "admin"}
 
-  As in `for/1`, variables bound inside `with/1` won't leak.
+  As in `for/1`, variables bound inside `with/1` won't be accessible
+  outside of `with/1`.
+
   Expressions without `<-` may also be used in clauses. For instance,
   you can perform regular matches with the `=` operator:
 
@@ -1527,7 +1625,7 @@ defmodule Kernel.SpecialForms do
       ** (MatchError) no match of right hand side value: :bar
 
   As with any other function or macro call in Elixir, explicit parens can
-  also be used around the arguments before the `do`/`end` block:
+  also be used around the arguments before the `do`-`end` block:
 
       iex> opts = %{width: 10, height: 15}
       iex> with(
@@ -1587,7 +1685,8 @@ defmodule Kernel.SpecialForms do
 
   Note how we are having to reconstruct the result types of `Path.extname/1`
   and `File.exists?/1` to build error messages. In this case, it is better
-  to change the with clauses to already return the desired format, like this:
+  to refactor the code so each `<-` already return the desired format in case
+  of errors, like this:
 
       with :ok <- validate_extension(path),
            :ok <- validate_exists(path) do
@@ -1596,7 +1695,7 @@ defmodule Kernel.SpecialForms do
         {:ok, backup_path}
       end
 
-      defp validate_extname(path) do
+      defp validate_extension(path) do
         if Path.extname(path) == ".ex", do: :ok, else: {:error, :invalid_extension}
       end
 
@@ -1605,7 +1704,7 @@ defmodule Kernel.SpecialForms do
       end
 
   Note how the code above is better organized and clearer once we
-  make sure each clause in `with` returns a normalize format.
+  make sure each `<-` in `with` returns a normalized format.
   """
   defmacro with(args), do: error!([args])
 
@@ -2049,6 +2148,25 @@ defmodule Kernel.SpecialForms do
         do_something_with("tmp/story.txt")
       after
         File.rm("tmp/story.txt")
+      end
+
+  Although `after` clauses are invoked whether or not there was an error, they do not
+  modify the return value. All of the following examples return `:return_me`:
+
+      try do
+        :return_me
+      after
+        IO.puts("I will be printed")
+        :not_returned
+      end
+
+      try do
+        raise "boom"
+      rescue
+        _ -> :return_me
+      after
+        IO.puts("I will be printed")
+        :not_returned
       end
 
   ## `else` clauses

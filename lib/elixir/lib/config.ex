@@ -34,12 +34,14 @@ defmodule Config do
   `Config` also provides a low-level API for evaluating and reading
   configuration, under the `Config.Reader` module.
 
-  **Important:** if you are writing a library to be used by other developers,
-  it is generally recommended to avoid the application environment, as the
-  application environment is effectively a global storage. Also note that
-  the `config/config.exs` of a library is not evaluated when the library is
-  used as a dependency, as configuration is always meant to configure the
-  current project. For more information, read our [library guidelines](library-guidelines.md).
+  > #### Avoid application environment in libraries {: .info}
+  >
+  > If you are writing a library to be used by other developers,
+  > it is generally recommended to avoid the application environment, as the
+  > application environment is effectively a global storage. Also note that
+  > the `config/config.exs` of a library is not evaluated when the library is
+  > used as a dependency, as configuration is always meant to configure the
+  > current project. For more information, read our [library guidelines](library-guidelines.md).
 
   ## Migrating from `use Mix.Config`
 
@@ -62,7 +64,27 @@ defmodule Config do
         import_config config
       end
 
-  The last step is to replace all `Mix.env()` calls by `config_env()`.
+  The last step is to replace all `Mix.env()` calls in the config files with `config_env()`.
+
+  Keep in mind you must also avoid using `Mix.env()` inside your project files.
+  To check the environment at _runtime_, you may add a configuration key:
+
+      # config.exs
+      ...
+      config :my_app, env: config_env()
+
+  Then, in other scripts and modules, you may get the environment with
+  `Application.fetch_env!/2`:
+
+      # router.exs
+      ...
+      if Application.fetch_env!(:my_app, :env) == :prod do
+        ...
+      end
+
+  The only files where you may access functions from the `Mix` module are
+  the `mix.exs` file and inside custom Mix tasks, which always within the
+  `Mix.Tasks` namespace.
 
   ## config/runtime.exs
 
@@ -75,7 +97,7 @@ defmodule Config do
   @config_key {__MODULE__, :config}
   @imports_key {__MODULE__, :imports}
 
-  defp get_opts!(), do: Process.get(@opts_key)
+  defp get_opts!(), do: Process.get(@opts_key) || raise_improper_use!()
   defp put_opts(value), do: Process.put(@opts_key, value)
   defp delete_opts(), do: Process.delete(@opts_key)
 
@@ -102,8 +124,9 @@ defmodule Config do
 
   The given `opts` are merged into the existing configuration
   for the given `root_key`. Conflicting keys are overridden by the
-  ones specified in `opts`. For example, the application
-  configuration below
+  ones specified in `opts`, unless they are keywords, which are
+  deep merged recursively. For example, the application configuration
+  below
 
       config :logger,
         level: :warn,
@@ -138,21 +161,30 @@ defmodule Config do
 
   The given `opts` are merged into the existing values for `key`
   in the given `root_key`. Conflicting keys are overridden by the
-  ones specified in `opts`. For example, the application
-  configuration below
+  ones specified in `opts`, unless they are keywords, which are
+  deep merged recursively. For example, the application configuration
+  below
 
       config :ecto, Repo,
         log_level: :warn,
-        adapter: Ecto.Adapters.Postgres
+        adapter: Ecto.Adapters.Postgres,
+        metadata: [read_only: true]
 
       config :ecto, Repo,
         log_level: :info,
-        pool_size: 10
+        pool_size: 10,
+        metadata: [replica: true]
 
   will have a final value of the configuration for the `Repo`
   key in the `:ecto` application of:
 
-      [log_level: :info, pool_size: 10, adapter: Ecto.Adapters.Postgres]
+      Application.get_env(:ecto, Repo)
+      #=> [
+      #=>   log_level: :info,
+      #=>   pool_size: 10,
+      #=>   adapter: Ecto.Adapters.Postgres,
+      #=>   metadata: [read_only: true, replica: true]
+      #=> ]
 
   """
   @doc since: "1.9.0"
@@ -291,8 +323,6 @@ defmodule Config do
         :ok
     end
 
-    # TODO: Emit a warning if Mix.env() is found in said files in Elixir v1.15.
-    # Note this won't be a deprecation warning as it will always be emitted.
     Code.eval_string(contents, [], file: file)
   end
 

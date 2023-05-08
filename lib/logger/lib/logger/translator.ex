@@ -30,6 +30,15 @@ defmodule Logger.Translator do
   """
 
   @doc """
+  Callback for translating a logger message.
+  """
+  @callback translate(Logger.level(), Logger.level(), :format | :report, :logger.report()) ::
+              {:ok, iodata, keyword}
+              | {:ok, iodata}
+              | :skip
+              | :none
+
+  @doc """
   Built-in translation function.
   """
   def translate(min_level, level, kind, message)
@@ -107,8 +116,8 @@ defmodule Logger.Translator do
     case message do
       # This is no longer emitted by Erlang/OTP but it may be
       # manually emitted by libraries like connection.
-      {'** Generic server ' ++ _, [name, last, state, reason | client]} ->
-        opts = Application.get_env(:logger, :translator_inspect_opts)
+      {~c"** Generic server " ++ _, [name, last, state, reason | client]} ->
+        opts = Application.fetch_env!(:logger, :translator_inspect_opts)
         {formatted, reason} = format_reason(reason)
         metadata = [crash_reason: reason] ++ registered_name(name)
 
@@ -123,7 +132,7 @@ defmodule Logger.Translator do
           {:ok, msg, metadata}
         end
 
-      {'Error in process ' ++ _, [pid, node, {reason, stack}]} ->
+      {~c"Error in process " ++ _, [pid, node, {reason, stack}]} ->
         reason = Exception.normalize(:error, reason, stack)
 
         msg = [
@@ -136,7 +145,7 @@ defmodule Logger.Translator do
 
         {:ok, msg, [crash_reason: exit_reason(:error, reason, stack)]}
 
-      {'Error in process ' ++ _, [pid, {reason, stack}]} ->
+      {~c"Error in process " ++ _, [pid, {reason, stack}]} ->
         reason = Exception.normalize(:error, reason, stack)
         msg = ["Process ", inspect(pid), " raised an exception" | format(:error, reason, stack)]
         {:ok, msg, [crash_reason: exit_reason(:error, reason, stack)]}
@@ -173,6 +182,21 @@ defmodule Logger.Translator do
     {:ok, ["Application ", Atom.to_string(app), " started at " | inspect(node)]}
   end
 
+  def translate(_min_level, :debug, :report, {:logger, [formatter_error: formatter] ++ data}) do
+    # TODO: Remove :catched once we require Erlang/OTP 25+
+    case data[:caught] || data[:catched] do
+      {:throw, {:error, good, bad}, stacktrace} ->
+        message =
+          "bad return value from Logger formatter #{inspect(formatter)}, " <>
+            "got #{inspect(bad)} after #{inspect(good)}"
+
+        {:ok, Exception.format(:error, RuntimeError.exception(message), stacktrace)}
+
+      _ ->
+        :none
+    end
+  end
+
   ## Helpers
 
   def translate(_min_level, _level, _kind, _message) do
@@ -180,7 +204,7 @@ defmodule Logger.Translator do
   end
 
   defp report_gen_server_terminate(min_level, report) do
-    inspect_opts = Application.get_env(:logger, :translator_inspect_opts)
+    inspect_opts = Application.fetch_env!(:logger, :translator_inspect_opts)
 
     %{
       client_info: client,
@@ -206,7 +230,7 @@ defmodule Logger.Translator do
   end
 
   defp report_gen_event_terminate(min_level, report) do
-    inspect_opts = Application.get_env(:logger, :translator_inspect_opts)
+    inspect_opts = Application.fetch_env!(:logger, :translator_inspect_opts)
 
     %{
       handler: handler,
@@ -581,7 +605,7 @@ defmodule Logger.Translator do
   defp registered_name(_name), do: []
 
   defp format_mfa(mod, fun, :undefined),
-    do: [inspect(mod), ?., Code.Identifier.inspect_as_function(fun) | "/?"]
+    do: [inspect(mod), ?., Macro.inspect_atom(:remote_call, fun) | "/?"]
 
   defp format_mfa(mod, fun, args),
     do: Exception.format_mfa(mod, fun, args)

@@ -4,7 +4,7 @@ defmodule Date do
 
   The Date struct contains the fields year, month, day and calendar.
   New dates can be built with the `new/3` function or using the
-  `~D` (see `Kernel.sigil_D/2`) sigil:
+  `~D` (see `sigil_D/2`) sigil:
 
       iex> ~D[2000-01-01]
       ~D[2000-01-01]
@@ -31,7 +31,12 @@ defmodule Date do
 
   Comparisons in Elixir using `==/2`, `>/2`, `</2` and similar are structural
   and based on the `Date` struct fields. For proper comparison between
-  dates, use the `compare/2` function.
+  dates, use the `compare/2` function. The existence of the `compare/2`
+  function in this module also allows using `Enum.min/2` and `Enum.max/2`
+  functions to get the minimum and maximum date of an `Enum`. For example:
+
+      iex>  Enum.min([~D[2017-03-31], ~D[2017-04-01]], Date)
+      ~D[2017-03-31]
 
   ## Using epochs
 
@@ -72,19 +77,23 @@ defmodule Date do
   ## Examples
 
       iex> Date.range(~D[1999-01-01], ~D[2000-01-01])
-      #DateRange<~D[1999-01-01], ~D[2000-01-01]>
+      Date.range(~D[1999-01-01], ~D[2000-01-01])
 
   A range of dates implements the `Enumerable` protocol, which means
   functions in the `Enum` module can be used to work with
   ranges:
 
       iex> range = Date.range(~D[2001-01-01], ~D[2002-01-01])
+      iex> range
+      Date.range(~D[2001-01-01], ~D[2002-01-01])
       iex> Enum.count(range)
       366
-      iex> Enum.member?(range, ~D[2001-02-01])
+      iex> ~D[2001-02-01] in range
       true
       iex> Enum.take(range, 3)
       [~D[2001-01-01], ~D[2001-01-02], ~D[2001-01-03]]
+      iex> for d <- Date.range(~D[2023-03-01], ~D[2023-04-01]), Date.day_of_week(d) == 7, do: d
+      [~D[2023-03-05], ~D[2023-03-12], ~D[2023-03-19], ~D[2023-03-26]]
 
   """
   @doc since: "1.5.0"
@@ -108,10 +117,10 @@ defmodule Date do
 
       iex> range = Date.range(~D[2001-01-01], ~D[2002-01-01], 2)
       iex> range
-      #DateRange<~D[2001-01-01], ~D[2002-01-01], 2>
+      Date.range(~D[2001-01-01], ~D[2002-01-01], 2)
       iex> Enum.count(range)
       183
-      iex> Enum.member?(range, ~D[2001-01-03])
+      iex> ~D[2001-01-03] in range
       true
       iex> Enum.take(range, 3)
       [~D[2001-01-01], ~D[2001-01-03], ~D[2001-01-05]]
@@ -560,6 +569,44 @@ defmodule Date do
   end
 
   @doc """
+  Returns true if the first date is strictly earlier than the second.
+
+  ## Examples
+
+      iex> Date.before?(~D[2021-01-01], ~D[2022-02-02])
+      true
+      iex> Date.before?(~D[2021-01-01], ~D[2021-01-01])
+      false
+      iex> Date.before?(~D[2022-02-02], ~D[2021-01-01])
+      false
+
+  """
+  @doc since: "1.15.0"
+  @spec before?(Calendar.date(), Calendar.date()) :: boolean()
+  def before?(date1, date2) do
+    compare(date1, date2) == :lt
+  end
+
+  @doc """
+  Returns true if the first date is strictly later than the second.
+
+  ## Examples
+
+      iex> Date.after?(~D[2022-02-02], ~D[2021-01-01])
+      true
+      iex> Date.after?(~D[2021-01-01], ~D[2021-01-01])
+      false
+      iex> Date.after?(~D[2021-01-01], ~D[2022-02-02])
+      false
+
+  """
+  @doc since: "1.15.0"
+  @spec after?(Calendar.date(), Calendar.date()) :: boolean()
+  def after?(date1, date2) do
+    compare(date1, date2) == :gt
+  end
+
+  @doc """
   Converts the given `date` from its calendar to the given `calendar`.
 
   Returns `{:ok, date}` if the calendars are compatible,
@@ -830,8 +877,6 @@ defmodule Date do
       ~D[2020-07-05]
       iex> Date.end_of_week(~D[2020-07-06], :sunday)
       ~D[2020-07-11]
-      iex> Date.end_of_week(~D[2020-07-06], :sunday)
-      ~D[2020-07-11]
       iex> Date.end_of_week(~D[2020-07-06], :saturday)
       ~D[2020-07-10]
       iex> Date.end_of_week(~N[2020-07-11 01:23:45])
@@ -943,8 +988,14 @@ defmodule Date do
   @spec year_of_era(Calendar.date()) :: {Calendar.year(), non_neg_integer()}
   def year_of_era(date)
 
-  def year_of_era(%{calendar: calendar, year: year}) do
-    calendar.year_of_era(year)
+  def year_of_era(%{calendar: calendar, year: year, month: month, day: day}) do
+    # TODO: Remove me on 1.17
+    # The behaviour implementation already warns on missing callback.
+    if function_exported?(calendar, :year_of_era, 3) do
+      calendar.year_of_era(year, month, day)
+    else
+      calendar.year_of_era(year)
+    end
   end
 
   @doc """
@@ -986,6 +1037,8 @@ defmodule Date do
   """
   @doc since: "1.11.0"
   @spec beginning_of_month(Calendar.date()) :: t()
+  def beginning_of_month(date)
+
   def beginning_of_month(%{year: year, month: month, calendar: calendar}) do
     %Date{year: year, month: month, day: 1, calendar: calendar}
   end
@@ -1005,6 +1058,8 @@ defmodule Date do
   """
   @doc since: "1.11.0"
   @spec end_of_month(Calendar.date()) :: t()
+  def end_of_month(date)
+
   def end_of_month(%{year: year, month: month, calendar: calendar} = date) do
     day = Date.days_in_month(date)
     %Date{year: year, month: month, day: day, calendar: calendar}

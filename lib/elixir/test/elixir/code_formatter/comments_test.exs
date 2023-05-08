@@ -19,7 +19,8 @@ defmodule Code.Formatter.CommentsTest do
     end
 
     test "recognizes hashbangs" do
-      assert_format "#!/usr/bin/env elixir", "#! /usr/bin/env elixir"
+      assert_format "#! /usr/bin/env elixir", "#! /usr/bin/env elixir"
+      assert_format "#!/usr/bin/env elixir", "#!/usr/bin/env elixir"
       assert_same "#!"
     end
 
@@ -277,10 +278,19 @@ defmodule Code.Formatter.CommentsTest do
 
       assert_format bad, good
 
-      assert_same ~S"""
+      bad = ~S"""
       IO.puts("Hello #{hello
       world}")
       """
+
+      good = ~S"""
+      IO.puts(
+        "Hello #{hello
+        world}"
+      )
+      """
+
+      assert_format bad, good
     end
   end
 
@@ -934,7 +944,7 @@ defmodule Code.Formatter.CommentsTest do
       # before
       foo    # this is foo
       ~> bar # this is bar
-      <|> baz # this is baz
+      <~> baz # this is baz
       # after
       """
 
@@ -945,7 +955,7 @@ defmodule Code.Formatter.CommentsTest do
       # this is bar
       ~> bar
       # this is baz
-      <|> baz
+      <~> baz
 
       # after
       """

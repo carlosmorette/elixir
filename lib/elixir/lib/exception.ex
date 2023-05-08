@@ -49,11 +49,8 @@ defmodule Exception do
     %{general: message(exception), reason: "#" <> Atom.to_string(struct)}
   end
 
-  @doc """
-  Returns `true` if the given `term` is an exception.
-  """
-  # TODO: Deprecate this on Elixir v1.15
-  @doc deprecated: "Use Kernel.is_exception/1 instead"
+  @doc false
+  @deprecated "Use Kernel.is_exception/1 instead"
   def exception?(term)
   def exception?(%_{__exception__: true}), do: true
   def exception?(_), do: false
@@ -68,7 +65,7 @@ defmodule Exception do
       caught_exception ->
         "got #{inspect(caught_exception.__struct__)} with message " <>
           "#{inspect(message(caught_exception))} while retrieving Exception.message/1 " <>
-          "for #{inspect(exception)}"
+          "for #{inspect(exception)}. Stacktrace:\n#{format_stacktrace(__STACKTRACE__)}"
     else
       result when is_binary(result) ->
         result
@@ -217,16 +214,21 @@ defmodule Exception do
       clauses =
         for {meta, ex_args, guards, _block} <- clauses do
           scope = :elixir_erl.scope(meta, true)
+          ann = :elixir_erl.get_ann(meta)
 
           {erl_args, scope} =
-            :elixir_erl_clauses.match(&:elixir_erl_pass.translate_args/2, ex_args, scope)
+            :elixir_erl_clauses.match(ann, &:elixir_erl_pass.translate_args/3, ex_args, scope)
 
           {args, binding} =
             [call_args, ex_args, erl_args]
             |> Enum.zip()
             |> Enum.map_reduce([], &blame_arg/2)
 
-          guards = Enum.map(guards, &blame_guard(&1, scope, binding))
+          guards =
+            guards
+            |> Enum.map(&blame_guard(&1, ann, scope, binding))
+            |> Enum.map(&Macro.prewalk(&1, fn guard -> translate_guard(guard) end))
+
           {args, guards}
         end
 
@@ -234,6 +236,69 @@ defmodule Exception do
     else
       _ -> :error
     end
+  end
+
+  defp is_map_node?({:is_map, _, [_]}), do: true
+  defp is_map_node?(_), do: false
+  defp is_map_key_node?({:is_map_key, _, [_, _]}), do: true
+  defp is_map_key_node?(_), do: false
+
+  defp struct_validation_node?(
+         {:is_atom, _, [{{:., [], [:erlang, :map_get]}, _, [:__struct__, _]}]}
+       ),
+       do: true
+
+  defp struct_validation_node?(
+         {:==, _, [{{:., [], [:erlang, :map_get]}, _, [:__struct__, _]}, _module]}
+       ),
+       do: true
+
+  defp struct_validation_node?(_), do: false
+
+  defp is_struct_macro?(
+         {:and, _,
+          [
+            {:and, _, [%{node: node_1 = {_, _, [arg]}}, %{node: node_2 = {_, _, [arg, _]}}]},
+            %{node: node_3 = {_, _, [{_, _, [_, arg]}]}}
+          ]}
+       ),
+       do: is_map_node?(node_1) and is_map_key_node?(node_2) and struct_validation_node?(node_3)
+
+  defp is_struct_macro?(
+         {:and, _,
+          [
+            {:and, _,
+             [
+               {:and, _,
+                [
+                  %{node: node_1 = {_, _, [arg]}},
+                  {:or, _, [%{node: {:is_atom, _, [_]}}, %{node: :fail}]}
+                ]},
+               %{node: node_2 = {_, _, [arg, _]}}
+             ]},
+            %{node: node_3 = {_, _, [{_, _, [_, arg]}, _]}}
+          ]}
+       ),
+       do: is_map_node?(node_1) and is_map_key_node?(node_2) and struct_validation_node?(node_3)
+
+  defp is_struct_macro?(_), do: false
+
+  defp translate_guard(guard) do
+    if is_struct_macro?(guard) do
+      undo_is_struct_guard(guard)
+    else
+      guard
+    end
+  end
+
+  defp undo_is_struct_guard({:and, meta, [_, %{node: {_, _, [{_, _, [_, arg]} | optional]}}]}) do
+    args =
+      case optional do
+        [] -> [arg]
+        [module] -> [arg, module]
+      end
+
+    %{match?: meta[:value], node: {:is_struct, meta, args}}
   end
 
   defp blame_arg({call_arg, ex_arg, erl_arg}, binding) do
@@ -266,11 +331,11 @@ defmodule Exception do
     end)
   end
 
-  defp blame_guard({{:., _, [:erlang, op]}, meta, [left, right]}, scope, binding)
+  defp blame_guard({{:., _, [:erlang, op]}, meta, [left, right]}, ann, scope, binding)
        when op == :andalso or op == :orelse do
     guards = [
-      blame_guard(left, scope, binding),
-      blame_guard(right, scope, binding)
+      blame_guard(left, ann, scope, binding),
+      blame_guard(right, ann, scope, binding)
     ]
 
     kernel_op =
@@ -279,22 +344,37 @@ defmodule Exception do
         :andalso -> :and
       end
 
-    {kernel_op, meta, guards}
+    evaluate_guard(kernel_op, meta, guards)
   end
 
-  defp blame_guard(ex_guard, scope, binding) do
-    {erl_guard, _} = :elixir_erl_pass.translate(ex_guard, scope)
+  defp blame_guard(ex_guard, ann, scope, binding) do
+    ex_guard
+    |> blame_guard?(binding, ann, scope)
+    |> blame_wrap(rewrite_guard(ex_guard))
+  end
 
-    match? =
-      try do
-        {:value, true, _} = :erl_eval.expr(erl_guard, binding, :none)
-        true
-      rescue
-        _ -> false
+  defp blame_guard?(ex_guard, binding, ann, scope) do
+    {erl_guard, _} = :elixir_erl_pass.translate(ex_guard, ann, scope)
+    {:value, true, _} = :erl_eval.expr(erl_guard, binding, :none)
+    true
+  rescue
+    _ -> false
+  end
+
+  defp evaluate_guard(kernel_op, meta, guards = [_, _]) do
+    [x, y] = Enum.map(guards, &evaluate_guard/1)
+
+    logic_value =
+      case kernel_op do
+        :or -> x or y
+        :and -> x and y
       end
 
-    blame_wrap(match?, rewrite_guard(ex_guard))
+    {kernel_op, Keyword.put(meta, :value, logic_value), guards}
   end
+
+  defp evaluate_guard(%{match?: value}), do: value
+  defp evaluate_guard({_, meta, _}) when is_list(meta), do: meta[:value]
 
   defp rewrite_guard(guard) do
     Macro.prewalk(guard, fn
@@ -621,12 +701,12 @@ defmodule Exception do
     case Code.Identifier.extract_anonymous_fun_parent(fun) do
       {outer_name, outer_arity} ->
         "anonymous fn#{format_arity(arity)} in " <>
-          "#{Code.Identifier.inspect_as_atom(module)}." <>
-          "#{Code.Identifier.inspect_as_function(outer_name)}/#{outer_arity}"
+          "#{Macro.inspect_atom(:literal, module)}." <>
+          "#{Macro.inspect_atom(:remote_call, outer_name)}/#{outer_arity}"
 
       :error ->
-        "#{Code.Identifier.inspect_as_atom(module)}." <>
-          "#{Code.Identifier.inspect_as_function(fun)}#{format_arity(arity)}"
+        "#{Macro.inspect_atom(:literal, module)}." <>
+          "#{Macro.inspect_atom(:remote_call, fun)}#{format_arity(arity)}"
     end
   end
 
@@ -696,6 +776,17 @@ defmodule Exception do
     end
   end
 
+  @doc false
+  def format_snippet(snippet, error_line) do
+    line_digits = error_line |> Integer.to_string() |> byte_size()
+    placeholder = String.duplicate(" ", max(line_digits, 2))
+    padding = if line_digits < 2, do: " "
+
+    " #{placeholder} |\n" <>
+      " #{padding}#{error_line} | #{snippet.content}\n" <>
+      " #{placeholder} | #{String.duplicate(" ", snippet.offset)}^"
+  end
+
   defp format_location(opts) when is_list(opts) do
     format_file_line(Keyword.get(opts, :file), Keyword.get(opts, :line), " ")
   end
@@ -720,12 +811,16 @@ defmodule ArgumentError do
       ) do
     message =
       cond do
+        not proper_list?(args) ->
+          "you attempted to apply a function named #{inspect(function)} on module #{inspect(module)} " <>
+            "with arguments #{inspect(args)}. Arguments (the third argument of apply) must always be a proper list"
+
         # Note that args may be an empty list even if they were supplied
         not is_atom(module) and is_atom(function) and args == [] ->
           "you attempted to apply a function named #{inspect(function)} on #{inspect(module)}. " <>
             "If you are using Kernel.apply/3, make sure the module is an atom. " <>
-            "If you are using the dot syntax, such as map.field or module.function(), " <>
-            "make sure the left side of the dot is an atom or a map"
+            "If you are using the dot syntax, such as module.function(), " <>
+            "make sure the left-hand side of the dot is a module atom"
 
         not is_atom(module) ->
           "you attempted to apply a function on #{inspect(module)}. " <>
@@ -733,12 +828,8 @@ defmodule ArgumentError do
 
         not is_atom(function) ->
           "you attempted to apply a function named #{inspect(function)} on module #{inspect(module)}. " <>
-            "However #{inspect(function)} is not a valid function name. Function names (the second argument " <>
+            "However, #{inspect(function)} is not a valid function name. Function names (the second argument " <>
             "of apply) must always be an atom"
-
-        not is_list(args) ->
-          "you attempted to apply a function named #{inspect(function)} on module #{inspect(module)} " <>
-            "with arguments #{inspect(args)}. Arguments (the third argument of apply) must always be a list"
       end
 
     {%{exception | message: message}, stacktrace}
@@ -747,6 +838,9 @@ defmodule ArgumentError do
   def blame(exception, stacktrace) do
     {exception, stacktrace}
   end
+
+  defp proper_list?(list) when length(list) >= 0, do: true
+  defp proper_list?(_), do: false
 end
 
 defmodule ArithmeticError do
@@ -794,20 +888,56 @@ defmodule SystemLimitError do
 end
 
 defmodule SyntaxError do
-  defexception [:file, :line, :column, description: "syntax error"]
+  defexception [:file, :line, :column, :snippet, description: "syntax error"]
 
   @impl true
-  def message(%{file: file, line: line, column: column, description: description}) do
+  def message(%{
+        file: file,
+        line: line,
+        column: column,
+        description: description,
+        snippet: snippet
+      })
+      when not is_nil(snippet) and not is_nil(column) do
+    Exception.format_file_line_column(Path.relative_to_cwd(file), line, column) <>
+      " " <> description <> "\n" <> Exception.format_snippet(snippet, line)
+  end
+
+  @impl true
+  def message(%{
+        file: file,
+        line: line,
+        column: column,
+        description: description
+      }) do
     Exception.format_file_line_column(Path.relative_to_cwd(file), line, column) <>
       " " <> description
   end
 end
 
 defmodule TokenMissingError do
-  defexception [:file, :line, :column, description: "expression is incomplete"]
+  defexception [:file, :line, :snippet, :column, description: "expression is incomplete"]
 
   @impl true
-  def message(%{file: file, line: line, column: column, description: description}) do
+  def message(%{
+        file: file,
+        line: line,
+        column: column,
+        description: description,
+        snippet: snippet
+      })
+      when not is_nil(snippet) and not is_nil(column) do
+    Exception.format_file_line_column(Path.relative_to_cwd(file), line, column) <>
+      " " <> description <> "\n" <> Exception.format_snippet(snippet, line)
+  end
+
+  @impl true
+  def message(%{
+        file: file,
+        line: line,
+        column: column,
+        description: description
+      }) do
     Exception.format_file_line_column(file && Path.relative_to_cwd(file), line, column) <>
       " " <> description
   end
@@ -818,7 +948,22 @@ defmodule CompileError do
 
   @impl true
   def message(%{file: file, line: line, description: description}) do
-    Exception.format_file_line(file && Path.relative_to_cwd(file), line) <> " " <> description
+    case Exception.format_file_line(file && Path.relative_to_cwd(file), line) do
+      "" -> description
+      formatted -> formatted <> " " <> description
+    end
+  end
+end
+
+defmodule Kernel.TypespecError do
+  defexception [:file, :line, :description]
+
+  @impl true
+  def message(%{file: file, line: line, description: description}) do
+    case Exception.format_file_line(file && Path.relative_to_cwd(file), line) do
+      "" -> description
+      formatted -> formatted <> " " <> description
+    end
   end
 end
 
@@ -979,8 +1124,8 @@ defmodule UndefinedFunctionError do
   end
 
   defp hint(nil, _function, 0, _loaded?) do
-    ". If you are using the dot syntax, such as map.field or module.function(), " <>
-      "make sure the left side of the dot is an atom or a map"
+    ". If you are using the dot syntax, such as module.function(), " <>
+      "make sure the left-hand side of the dot is a module atom"
   end
 
   defp hint(module, function, arity, true) do
@@ -996,7 +1141,7 @@ defmodule UndefinedFunctionError do
   def hint_for_loaded_module(module, function, arity, exports) do
     cond do
       macro_exported?(module, function, arity) ->
-        ". However there is a macro with the same name and arity. " <>
+        ". However, there is a macro with the same name and arity. " <>
           "Be sure to require #{inspect(module)} if you intend to invoke this macro"
 
       message = otp_obsolete(module, function, arity) ->
@@ -1045,7 +1190,7 @@ defmodule UndefinedFunctionError do
   end
 
   defp format_fa({_dist, fun, arity}) do
-    ["      * ", Code.Identifier.inspect_as_function(fun), ?/, Integer.to_string(arity), ?\n]
+    ["      * ", Macro.inspect_atom(:remote_call, fun), ?/, Integer.to_string(arity), ?\n]
   end
 
   defp behaviour_hint(module, function, arity) do
@@ -1154,7 +1299,7 @@ defmodule FunctionClauseError do
     format_clause_fun = fn {args, guards} ->
       args = Enum.map_join(args, ", ", fun)
       base = "    #{kind} #{function}(#{args})"
-      Enum.reduce(guards, base, &"#{&2} when #{clause_to_string(&1, fun)}") <> "\n"
+      Enum.reduce(guards, base, &"#{&2} when #{clause_to_string(&1, fun, 0)}") <> "\n"
     end
 
     "\n\nThe following arguments were given to #{mfa}:\n" <>
@@ -1162,10 +1307,24 @@ defmodule FunctionClauseError do
       "#{format_clauses(clauses, format_clause_fun, @clause_limit)}"
   end
 
-  defp clause_to_string({op, _, [left, right]}, fun),
-    do: clause_to_string(left, fun) <> " #{op} " <> clause_to_string(right, fun)
+  defp clause_to_string({op, _, [left, right]} = node, fun, parent) do
+    case Code.Identifier.binary_op(op) do
+      {_side, precedence} ->
+        left = clause_to_string(left, fun, precedence)
+        right = clause_to_string(right, fun, precedence)
 
-  defp clause_to_string(node, fun), do: fun.(node)
+        if parent > precedence do
+          "(" <> left <> " #{op} " <> right <> ")"
+        else
+          left <> " #{op} " <> right
+        end
+
+      _ ->
+        fun.(node)
+    end
+  end
+
+  defp clause_to_string(node, fun, _precedence), do: fun.(node)
 
   defp format_args(args, inspect_fun) do
     args
@@ -1203,11 +1362,13 @@ defmodule FunctionClauseError do
 end
 
 defmodule Code.LoadError do
-  defexception [:file, :message]
+  defexception [:file, :message, :reason]
 
   def exception(opts) do
     file = Keyword.fetch!(opts, :file)
-    %Code.LoadError{message: "could not load #{file}", file: file}
+    reason = Keyword.fetch!(opts, :reason)
+    message = "could not load #{file}. Reason: #{reason}"
+    %Code.LoadError{message: message, file: file, reason: reason}
   end
 end
 
@@ -1262,7 +1423,7 @@ defmodule KeyError do
     message = "key #{inspect(key)} not found"
 
     if term != nil do
-      message <> " in: #{inspect(term)}"
+      message <> " in: #{inspect(term, pretty: true, limit: :infinity)}"
     else
       message
     end
@@ -1422,22 +1583,24 @@ defmodule File.LinkError do
 end
 
 defmodule ErlangError do
-  defexception [:original]
+  defexception [:original, :reason]
 
   @impl true
-  def message(exception) do
-    "Erlang error: #{inspect(exception.original)}"
+  def message(exception)
+
+  def message(%__MODULE__{original: original, reason: nil}) do
+    "Erlang error: #{inspect(original)}"
+  end
+
+  def message(%__MODULE__{original: original, reason: reason}) do
+    IO.iodata_to_binary(["Erlang error: ", inspect(original), reason])
   end
 
   @doc false
   def normalize(:badarg, stacktrace) do
-    case error_info(:badarg, stacktrace) do
-      {:ok, args} ->
-        message = "errors were found at the given arguments:\n\n#{args}"
-        %ArgumentError{message: message}
-
-      :error ->
-        %ArgumentError{}
+    case error_info(:badarg, stacktrace, "errors were found at the given arguments") do
+      {:ok, reason, details} -> %ArgumentError{message: reason <> details}
+      :error -> %ArgumentError{}
     end
   end
 
@@ -1446,15 +1609,11 @@ defmodule ErlangError do
   end
 
   def normalize(:system_limit, stacktrace) do
-    case error_info(:system_limit, stacktrace) do
-      {:ok, args} ->
-        message =
-          "a system limit has been reached due to errors at the given arguments:\n\n#{args}"
+    default_reason = "a system limit has been reached due to errors at the given arguments"
 
-        %SystemLimitError{message: message}
-
-      :error ->
-        %SystemLimitError{}
+    case error_info(:system_limit, stacktrace, default_reason) do
+      {:ok, reason, details} -> %SystemLimitError{message: reason <> details}
+      :error -> %SystemLimitError{}
     end
   end
 
@@ -1500,15 +1659,25 @@ defmodule ErlangError do
     %KeyError{key: key, term: term}
   end
 
-  def normalize({:badkey, key, map}, _stacktrace) do
+  def normalize({:badkey, key, map}, _stacktrace) when is_map(map) do
     %KeyError{key: key, term: map}
+  end
+
+  def normalize({:badkey, key, term}, _stacktrace) do
+    message =
+      "key #{inspect(key)} not found in: #{inspect(term, pretty: true, limit: :infinity)}\n\n" <>
+        "If you are using the dot syntax, such as map.field, " <>
+        "make sure the left-hand side of the dot is a map"
+
+    %KeyError{key: key, term: term, message: message}
   end
 
   def normalize({:case_clause, term}, _stacktrace) do
     %CaseClauseError{term: term}
   end
 
-  def normalize({:with_clause, term}, _stacktrace) do
+  # :else_clause is aligned on what Erlang returns for `maybe`
+  def normalize({:else_clause, term}, _stacktrace) do
     %WithClauseError{term: term}
   end
 
@@ -1530,8 +1699,11 @@ defmodule ErlangError do
     %ArgumentError{message: "argument error: #{inspect(payload)}"}
   end
 
-  def normalize(other, _stacktrace) do
-    %ErlangError{original: other}
+  def normalize(other, stacktrace) do
+    case error_info(other, stacktrace, "") do
+      {:ok, _reason, details} -> %ErlangError{original: other, reason: details}
+      :error -> %ErlangError{original: other}
+    end
   end
 
   defp from_stacktrace([{module, function, args, _} | _]) when is_list(args) do
@@ -1546,30 +1718,35 @@ defmodule ErlangError do
     {nil, nil, nil}
   end
 
-  defp error_info(:badarg, [{:erlang, fun, _, _} | _]) when fun in [:byte_size, :bit_size] do
-    {:ok,
-     """
-       * 1st argument: not a bitstring
-
-     This typically happens when calling Kernel.#{fun}/1 with an invalid argument \
-     or when performing binary construction or binary concatenation with <> and \
-     one of the arguments is not a binary\
-     """}
-  end
-
-  defp error_info(erl_exception, stacktrace) do
-    with [{module, _, args_or_arity, opts} | _] <- stacktrace,
+  defp error_info(erl_exception, stacktrace, default_reason) do
+    with [{module, fun, args_or_arity, opts} | tail] <- stacktrace,
          %{} = error_info <- opts[:error_info] do
-      module = Map.get(error_info, :module, module)
-      function = Map.get(error_info, :function, :format_error)
-      arity = if is_integer(args_or_arity), do: args_or_arity, else: length(args_or_arity)
-      extra = apply(module, function, [erl_exception, stacktrace])
-      args_errors = Map.take(extra, Enum.to_list(1..arity//1))
+      error_module = Map.get(error_info, :module, module)
+      error_fun = Map.get(error_info, :function, :format_error)
 
-      if map_size(args_errors) > 0 do
-        {:ok, IO.iodata_to_binary(Enum.map(args_errors, &arg_error/1))}
-      else
-        :error
+      error_info = Map.put(error_info, :pretty_printer, &inspect/1)
+      head = {module, fun, args_or_arity, Keyword.put(opts, :error_info, error_info)}
+
+      extra =
+        try do
+          apply(error_module, error_fun, [erl_exception, [head | tail]])
+        rescue
+          _ -> %{}
+        end
+
+      arity = if is_integer(args_or_arity), do: args_or_arity, else: length(args_or_arity)
+      args_errors = Map.take(extra, Enum.to_list(1..arity//1))
+      reason = Map.get(extra, :reason, default_reason)
+
+      cond do
+        map_size(args_errors) > 0 ->
+          {:ok, reason, IO.iodata_to_binary([":\n\n" | Enum.map(args_errors, &arg_error/1)])}
+
+        general = extra[:general] ->
+          {:ok, reason, ": " <> general}
+
+        true ->
+          :error
       end
     else
       _ -> :error
@@ -1582,4 +1759,62 @@ defmodule ErlangError do
   defp nth(2), do: "2nd"
   defp nth(3), do: "3rd"
   defp nth(n), do: "#{n}th"
+end
+
+defmodule Inspect.Error do
+  @moduledoc """
+  Raised when a struct cannot be inspected.
+  """
+  @enforce_keys [:exception_module, :exception_message, :stacktrace, :inspected_struct]
+  defexception @enforce_keys
+
+  @impl true
+  def exception(arguments) when is_list(arguments) do
+    exception = Keyword.fetch!(arguments, :exception)
+    exception_module = exception.__struct__
+    exception_message = Exception.message(exception) |> String.trim_trailing("\n")
+    stacktrace = Keyword.fetch!(arguments, :stacktrace)
+    inspected_struct = Keyword.fetch!(arguments, :inspected_struct)
+
+    %Inspect.Error{
+      exception_module: exception_module,
+      exception_message: exception_message,
+      stacktrace: stacktrace,
+      inspected_struct: inspected_struct
+    }
+  end
+
+  @impl true
+  def message(%__MODULE__{
+        exception_module: exception_module,
+        exception_message: exception_message,
+        inspected_struct: inspected_struct
+      }) do
+    ~s'''
+    got #{inspect(exception_module)} with message:
+
+        """
+    #{pad(exception_message, 4)}
+        """
+
+    while inspecting:
+
+    #{pad(inspected_struct, 4)}
+    '''
+  end
+
+  @doc false
+  def pad(message, padding_length)
+      when is_binary(message) and is_integer(padding_length) and padding_length >= 0 do
+    padding = String.duplicate(" ", padding_length)
+
+    message
+    |> String.split("\n")
+    |> Enum.map(fn
+      "" -> "\n"
+      line -> [padding, line, ?\n]
+    end)
+    |> IO.iodata_to_binary()
+    |> String.trim_trailing("\n")
+  end
 end

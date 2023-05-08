@@ -3,9 +3,9 @@
 Elixir comes with a notation for declaring types and specifications. Elixir is a dynamically typed language, and as such, type specifications are never used by the compiler to optimize or modify code. Still, using type specifications is useful because:
 
   * they provide documentation (for example, tools such as [`ExDoc`](https://hexdocs.pm/ex_doc/) show type specifications in the documentation)
-  * they're used by tools such as [Dialyzer](`:dialyzer`), that can analyze code with typespec to find type inconsistencies and possible bugs
+  * they're used by tools such as [Dialyzer](`:dialyzer`), that can analyze code with typespecs to find type inconsistencies and possible bugs
 
-Type specifications (sometimes referred to as *typespecs*) are defined in different contexts using the following attributes:
+Type specifications (most often referred to as *typespecs*) are defined in different contexts using the following attributes:
 
   * `@type`
   * `@opaque`
@@ -14,11 +14,14 @@ Type specifications (sometimes referred to as *typespecs*) are defined in differ
   * `@callback`
   * `@macrocallback`
 
+In addition, you can use `@typedoc` to describe a custom `@type` definition.
+
 See the "User-defined types" and "Defining a specification" sub-sections below for more information on defining types and typespecs.
 
 ## A simple example
 
     defmodule StringHelpers do
+      @typedoc "A word from the dictionary"
       @type word() :: String.t()
 
       @spec long_word?(word()) :: boolean()
@@ -27,16 +30,18 @@ See the "User-defined types" and "Defining a specification" sub-sections below f
       end
     end
 
-In the example above, this happens:
+In the example above:
 
-  * we declare a new type (`word()`) that is equivalent to the string type (`String.t()`);
+  * We declare a new type (`word()`) that is equivalent to the string type (`String.t()`).
 
-  * we specify that the `long_word?/1` function takes an argument of type `word()` and
+  * We describe the type using a `@typedoc`, which will be included in the generated documentation.
+
+  * We specify that the `long_word?/1` function takes an argument of type `word()` and
     returns a boolean (`boolean()`), that is, either `true` or `false`.
 
 ## Types and their syntax
 
-The syntax Elixir provides for type specifications is similar to [the one in Erlang](https://erlang.org/doc/reference_manual/typespec.html). Most of the built-in types provided in Erlang (for example, `pid()`) are expressed in the same way: `pid()` (or simply `pid`). Parameterized types (such as `list(integer)`) are supported as well and so are remote types (such as `Enum.t`). Integers and atom literals are allowed as types (for example, `1`, `:atom`, or `false`). All other types are built out of unions of predefined types. Some shorthands are allowed, such as `[...]`, `<<>>`, and `{...}`.
+The syntax Elixir provides for type specifications is similar to [the one in Erlang](https://www.erlang.org/doc/reference_manual/typespec.html). Most of the built-in types provided in Erlang (for example, `pid()`) are expressed in the same way: `pid()` (or simply `pid`). Parameterized types (such as `list(integer)`) are supported as well and so are remote types (such as [`Enum.t()`](`t:Enum.t/0`)). Integers and atom literals are allowed as types (for example, `1`, `:atom`, or `false`). All other types are built out of unions of predefined types. Some shorthands are allowed, such as `[...]`, `<<>>`, and `{...}`.
 
 The notation to represent the union of types is the pipe `|`. For example, the typespec `type :: atom() | pid() | tuple()` creates a type `type` that can be either an `atom`, a `pid`, or a `tuple`. This is usually called a [sum type](https://en.wikipedia.org/wiki/Tagged_union) in other languages
 
@@ -86,8 +91,8 @@ The following literals are also supported in typespecs:
           | <<_::size, _::_*unit>>
 
                                           ## (Anonymous) Functions
-          | (-> type)                     # 0-arity, returns type
-          | (type1, type2 -> type)        # 2-arity, returns type
+          | (-> type)                     # zero-arity, returns type
+          | (type1, type2 -> type)        # two-arity, returns type
           | (... -> type)                 # any arity, returns type
 
                                           ## Integers
@@ -99,7 +104,7 @@ The following literals are also supported in typespecs:
           | []                            # empty list
           | [...]                         # shorthand for nonempty_list(any())
           | [type, ...]                   # shorthand for nonempty_list(type)
-          | [key: value_type]             # keyword list with key :key of value_type
+          | [key: value_type]             # keyword list with optional key :key of value_type
 
                                                   ## Maps
           | %{}                                   # empty map
@@ -124,7 +129,9 @@ Built-in type           | Defined as
 `arity()`               | `0..255`
 `as_boolean(t)`         | `t`
 `binary()`              | `<<_::_*8>>`
+`nonempty_binary()`     | `<<_::8, _::_*8>>`
 `bitstring()`           | `<<_::_*1>>`
+`nonempty_bitstring()`  | `<<_::1, _::_*1>>`
 `boolean()`             | `true` \| `false`
 `byte()`                | `0..255`
 `char()`                | `0..0x10FFFF`
@@ -153,7 +160,7 @@ Built-in type           | Defined as
 
 ### Remote types
 
-Any module is also able to define its own types and the modules in Elixir are no exception. For example, the `Range` module defines a `t/0` type that represents a range: this type can be referred to as `t:Range.t/0`. In a similar fashion, a string is `t:String.t/0`, any enumerable can be `t:Enum.t/0`, and so on.
+Any module is also able to define its own types and the modules in Elixir are no exception. For example, the `Range` module defines a `t/0` type that represents a range: this type can be referred to as `t:Range.t/0`. In a similar fashion, a string is `t:String.t/0`, and so on.
 
 ### Maps
 
@@ -164,6 +171,32 @@ If you want to denote that keys that were not previously defined in the map are 
 it is common to end a map type with `optional(any) => any`.
 
 Note that the syntactic representation of `map()` is `%{optional(any) => any}`, not `%{}`. The notation `%{}` specifies the singleton type for the empty map.
+
+### Keyword Lists
+
+Beyond `keyword()` and `keyword(t)`, it can be helpful to compose a spec for an expected keyword list.
+For example:
+
+
+```elixir
+@type option :: {:name, String.t} | {:max, pos_integer} | {:min, pos_integer}
+@type options :: [option()]
+```
+
+This makes it clear that only these options are allowed, none are required, and order does not matter.
+
+It also allows composition with existing types.
+For example:
+
+```elixir
+type option :: {:my_option, String.t()} | GenServer.option()
+
+@spec start_link([option()]) :: GenServer.on_start()
+def start_link(opts) do
+  {my_opts, gen_server_opts} = Keyword.split(opts, [:my_option])
+  GenServer.start_link(__MODULE__, my_opts, gen_server_opts)
+end
+```
 
 ### User-defined types
 
@@ -197,12 +230,14 @@ Type variables with no restriction can also be defined using `var`.
 
     @spec function(arg) :: [arg] when arg: var
 
+This guard notation only works with `@spec`, `@callback`, and `@macrocallback`.
+
 You can also name your arguments in a typespec using `arg_name :: arg_type` syntax. This is particularly useful in documentation as a way to differentiate multiple arguments of the same type (or multiple elements of the same type in a type definition):
 
     @spec days_since_epoch(year :: integer, month :: integer, day :: integer) :: integer
     @type color :: {red :: integer, green :: integer, blue :: integer}
 
-Specifications can be overloaded just like ordinary functions.
+Specifications can be overloaded, just like ordinary functions.
 
     @spec function(integer) :: atom
     @spec function(atom) :: integer

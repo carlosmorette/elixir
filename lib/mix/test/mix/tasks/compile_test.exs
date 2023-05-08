@@ -3,6 +3,8 @@ Code.require_file("../../test_helper.exs", __DIR__)
 defmodule Mix.Tasks.CompileTest do
   use MixTest.Case
 
+  defmacro position(line, column), do: {line, column}
+
   defmodule CustomCompilers do
     def project do
       [compilers: [:elixir, :app, :custom]]
@@ -48,28 +50,6 @@ defmodule Mix.Tasks.CompileTest do
     assert Mix.Tasks.Compile.manifests() |> Enum.map(&Path.basename/1) == ["compile.elixir"]
   end
 
-  test "compiles a project with cached deps information" do
-    Mix.Project.pop()
-    Mix.Project.push(DepsApp)
-
-    in_fixture("deps_status", fn ->
-      File.mkdir_p!("lib")
-
-      File.write!("lib/a.ex", """
-      root = File.cwd!()
-      File.cd!("lib", fn ->
-        %{ok: path} = Mix.Project.deps_paths()
-
-        if Path.relative_to(path, root) != "deps/ok" do
-          raise "non cached path"
-        end
-      end)
-      """)
-
-      assert Mix.Task.run("compile", ["--force", "--from-mix-deps-compile"]) == {:ok, []}
-    end)
-  end
-
   test "compiles a project with mixfile" do
     in_fixture("no_mixfile", fn ->
       assert Mix.Task.run("compile", ["--verbose"]) == {:ok, []}
@@ -95,6 +75,42 @@ defmodule Mix.Tasks.CompileTest do
       purge([Enumerable])
       assert Mix.Tasks.App.Start.run(["--verbose"]) == :ok
       assert Protocol.consolidated?(Enumerable)
+    end)
+  end
+
+  test "compiles a project with cached deps information" do
+    Mix.Project.pop()
+
+    in_fixture("deps_status", fn ->
+      Mix.Project.push(DepsApp)
+
+      File.mkdir_p!("lib")
+
+      File.write!("lib/a.ex", """
+      root = File.cwd!()
+      File.cd!("lib", fn ->
+        %{ok: path} = Mix.Project.deps_paths()
+
+        if Path.relative_to(path, root) != "deps/ok" do
+          raise "non cached path"
+        end
+      end)
+      """)
+
+      assert Mix.Task.run("compile", ["--force", "--from-mix-deps-compile"]) == {:ok, []}
+    end)
+  end
+
+  test "recompiles app cache if manifest changes" do
+    in_fixture("no_mixfile", fn ->
+      Mix.Tasks.Compile.run(["--force"])
+      purge([A, B])
+
+      File.rm!("_build/dev/lib/sample/.mix/compile.app_cache")
+      Mix.Task.clear()
+
+      Mix.Tasks.Compile.run(["--force"])
+      assert File.exists?("_build/dev/lib/sample/.mix/compile.app_cache")
     end)
   end
 
@@ -134,13 +150,13 @@ defmodule Mix.Tasks.CompileTest do
 
       file = Path.absname("lib/a.ex")
 
-      ExUnit.CaptureIO.capture_io(fn ->
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
         assert {:error, [diagnostic]} = Mix.Task.run("compile", ["--return-errors"])
 
         assert %Mix.Task.Compiler.Diagnostic{
                  file: ^file,
                  severity: :error,
-                 position: 2,
+                 position: {2, 20},
                  message: "** (SyntaxError) lib/a.ex:2:" <> _,
                  compiler_name: "Elixir"
                } = diagnostic
@@ -167,7 +183,7 @@ defmodule Mix.Tasks.CompileTest do
 
       file = Path.absname("lib/b.ex")
 
-      ExUnit.CaptureIO.capture_io(fn ->
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
         assert {:error, [diagnostic]} = Mix.Task.run("compile", ["--return-errors"])
 
         assert %Mix.Task.Compiler.Diagnostic{
@@ -202,7 +218,7 @@ defmodule Mix.Tasks.CompileTest do
                  compiler_name: "erl_parse",
                  file: ^file,
                  message: "syntax error before: b",
-                 position: 2,
+                 position: position(2, 5),
                  severity: :error
                } = diagnostic
       end)
@@ -218,6 +234,21 @@ defmodule Mix.Tasks.CompileTest do
       assert Mix.Task.run("compile", ["--no-protocol-consolidation"]) == {:ok, []}
       assert File.regular?("_build/dev/lib/sample/ebin/Elixir.A.beam")
       refute File.regular?("_build/dev/lib/sample/consolidated/Elixir.Enumerable.beam")
+    end)
+  end
+
+  test "loads consolidated protocols even on --no-compile" do
+    in_fixture("no_mixfile", fn ->
+      File.rm("_build/dev/lib/sample/.mix/compile.protocols")
+      consolidated = "_build/dev/lib/sample/consolidated" |> Path.expand() |> to_charlist()
+
+      assert Mix.Task.run("compile") == {:ok, []}
+      assert File.regular?("_build/dev/lib/sample/consolidated/Elixir.Enumerable.beam")
+      assert consolidated in :code.get_path()
+
+      Code.delete_path("_build/dev/lib/sample/consolidated")
+      assert Mix.Task.rerun("compile", ["--no-compile"]) == {:noop, []}
+      assert consolidated in :code.get_path()
     end)
   end
 
@@ -271,6 +302,7 @@ defmodule Mix.Tasks.CompileTest do
 
       File.write!("lib/a.ex", """
       defmodule A do
+        require Application
         _ = Application.compile_env(:sample, :hello)
       end
       """)
@@ -283,10 +315,9 @@ defmodule Mix.Tasks.CompileTest do
       Mix.Tasks.Loadconfig.run([])
       Application.unload(:sample)
 
-      assert ExUnit.CaptureIO.capture_io(:stderr, fn ->
-               assert_raise ErlangError, fn -> Mix.Tasks.Compile.All.run([]) end
-             end) =~
-               " the application :sample has a different value set for key :hello during runtime compared to compile time"
+      assert_raise Mix.Error,
+                   ~r/the application :sample has a different value set for key :hello during runtime compared to compile time/,
+                   fn -> Mix.Tasks.Compile.All.run([]) end
 
       # Can start if compile env matches
       System.put_env("MIX_SAMPLE_HELLO", "compile")
@@ -296,5 +327,23 @@ defmodule Mix.Tasks.CompileTest do
   after
     System.delete_env("MIX_SAMPLE_HELLO")
     Application.delete_env(:sample, :hello, persistent: true)
+  end
+
+  test "code path prunning" do
+    Mix.ensure_application!(:parsetools)
+
+    in_fixture("no_mixfile", fn ->
+      assert Mix.Task.run("compile", []) == {:ok, []}
+      assert :code.where_is_file(~c"parsetools.app") == :non_existing
+    end)
+  end
+
+  test "code path prunning disabled" do
+    Mix.ensure_application!(:parsetools)
+
+    in_fixture("no_mixfile", fn ->
+      assert Mix.Task.run("compile", ["--no-prune-code-paths"]) == {:ok, []}
+      assert is_list(:code.where_is_file(~c"parsetools.app"))
+    end)
   end
 end

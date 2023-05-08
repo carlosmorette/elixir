@@ -75,8 +75,8 @@ defmodule KernelTest do
       [1, 2] ++ var = [1, 2, 3]
       assert var == [3]
 
-      'ab' ++ var = 'abc'
-      assert var == 'c'
+      ~c"ab" ++ var = ~c"abc"
+      assert var == ~c"c"
 
       [:a, :b] ++ var = [:a, :b, :c]
       assert var == [:c]
@@ -440,6 +440,12 @@ defmodule KernelTest do
     end
   end
 
+  describe ".." do
+    test "returns 0..-1//1" do
+      assert (..) == 0..-1//1
+    end
+  end
+
   describe "in/2" do
     test "too large list in guards" do
       defmodule TooLargeList do
@@ -607,24 +613,6 @@ defmodule KernelTest do
       refute map_dot(%{})
       refute map_dot(%{field: false})
       assert map_dot(%{field: true})
-
-      message =
-        "cannot invoke remote function in guard. " <>
-          "If you want to do a map lookup instead, please remove parens from map.field()"
-
-      assert_raise CompileError, Regex.compile!(message), fn ->
-        defmodule MapDot do
-          def map_dot(map) when map.field(), do: true
-        end
-      end
-
-      message = ~r"cannot invoke remote function Module.fun/0 inside guards"
-
-      assert_raise CompileError, message, fn ->
-        defmodule MapDot do
-          def map_dot(map) when Module.fun(), do: true
-        end
-      end
     end
 
     test "performs all side-effects" do
@@ -668,7 +656,7 @@ defmodule KernelTest do
     end
 
     test "with a non-literal non-escaped compile-time range in guards" do
-      message = "non-literal range in guard should be escaped with Macro.escape/2"
+      message = ~r"found unescaped value on the right side of in/2: 1..3"
 
       assert_eval_raise(ArgumentError, message, """
       defmodule InErrors do
@@ -723,8 +711,12 @@ defmodule KernelTest do
       result = expand_to_string(quote(do: rand() in 1..2))
       assert result =~ "var = rand()"
 
-      assert result =~
-               ":erlang.andalso(:erlang.is_integer(var), :erlang.andalso(:erlang.>=(var, 1), :erlang.\"=<\"(var, 2)))"
+      assert result =~ """
+             :erlang.andalso(
+               :erlang.is_integer(var),
+               :erlang.andalso(:erlang.>=(var, 1), :erlang.\"=<\"(var, 2))
+             )\
+             """
 
       # Empty list
       assert expand_to_string(quote(do: :x in [])) =~ "_ = :x\nfalse"
@@ -754,14 +746,26 @@ defmodule KernelTest do
       assert expand_to_string(quote(do: foo in [])) ==
                "_ = foo\nfalse"
 
-      assert expand_to_string(quote(do: foo in [1, 2, 3])) ==
-               ":erlang.orelse(:erlang.orelse(:erlang.\"=:=\"(foo, 1), :erlang.\"=:=\"(foo, 2)), :erlang.\"=:=\"(foo, 3))"
+      assert expand_to_string(quote(do: foo in [1, 2, 3])) == """
+             :erlang.orelse(
+               :erlang.orelse(:erlang.\"=:=\"(foo, 1), :erlang.\"=:=\"(foo, 2)),
+               :erlang.\"=:=\"(foo, 3)
+             )\
+             """
 
-      assert expand_to_string(quote(do: foo in 0..1)) ==
-               ":erlang.andalso(:erlang.is_integer(foo), :erlang.andalso(:erlang.>=(foo, 0), :erlang.\"=<\"(foo, 1)))"
+      assert expand_to_string(quote(do: foo in 0..1)) == """
+             :erlang.andalso(
+               :erlang.is_integer(foo),
+               :erlang.andalso(:erlang.>=(foo, 0), :erlang.\"=<\"(foo, 1))
+             )\
+             """
 
-      assert expand_to_string(quote(do: foo in -1..0)) ==
-               ":erlang.andalso(:erlang.is_integer(foo), :erlang.andalso(:erlang.>=(foo, -1), :erlang.\"=<\"(foo, 0)))"
+      assert expand_to_string(quote(do: foo in -1..0)) == """
+             :erlang.andalso(
+               :erlang.is_integer(foo),
+               :erlang.andalso(:erlang.>=(foo, -1), :erlang.\"=<\"(foo, 0))
+             )\
+             """
 
       assert expand_to_string(quote(do: foo in 1..1)) ==
                ":erlang.\"=:=\"(foo, 1)"
@@ -787,6 +791,11 @@ defmodule KernelTest do
 
     test ":functions" do
       refute {:__info__, 1} in Kernel.__info__(:functions)
+    end
+
+    test ":struct" do
+      assert Kernel.__info__(:struct) == nil
+      assert hd(URI.__info__(:struct)) == %{field: :scheme, required: false}
     end
 
     test "others" do
@@ -880,6 +889,16 @@ defmodule KernelTest do
       end
     end
 
+    test "raises when :to targeting the delegating module is given without the :as option" do
+      assert_raise ArgumentError,
+                   ~r/defdelegate function is calling itself, which will lead to an infinite loop. You should either change the value of the :to option or specify the :as option/,
+                   fn ->
+                     defmodule ImplAttributes do
+                       defdelegate foo(), to: __MODULE__
+                     end
+                   end
+    end
+
     defdelegate my_reverse(list \\ []), to: :lists, as: :reverse
     defdelegate my_get(map \\ %{}, key, default \\ ""), to: Map, as: :get
 
@@ -895,16 +914,34 @@ defmodule KernelTest do
   end
 
   describe "defmodule" do
+    test "expects atoms as module names" do
+      msg = ~r"invalid module name: 3"
+
+      assert_raise ArgumentError, msg, fn ->
+        defmodule 1 + 2, do: :ok
+      end
+    end
+
     test "does not accept special atoms as module names" do
       special_atoms = [nil, true, false]
 
       Enum.each(special_atoms, fn special_atom ->
         msg = ~r"invalid module name: #{inspect(special_atom)}"
 
-        assert_raise CompileError, msg, fn ->
+        assert_raise ArgumentError, msg, fn ->
           defmodule special_atom, do: :ok
         end
       end)
+    end
+
+    test "does not accept slashes in module names" do
+      assert_raise ArgumentError, ~r(invalid module name: :"foo/bar"), fn ->
+        defmodule :"foo/bar", do: :ok
+      end
+
+      assert_raise ArgumentError, ~r(invalid module name: :"foo\\\\bar"), fn ->
+        defmodule :"foo\\bar", do: :ok
+      end
     end
   end
 
@@ -1178,6 +1215,10 @@ defmodule KernelTest do
       assert [1] |> (&hd(&1)).() == 1
     end
 
+    test "reverse associativity" do
+      assert [1, [2], 3] |> (List.flatten() |> Enum.map(&(&1 * 2))) == [2, 4, 6]
+    end
+
     defp twice(a), do: a * 2
 
     defp local(list) do
@@ -1369,6 +1410,13 @@ defmodule KernelTest do
     assert match?(x when ceil(x) == 1, 0.2)
   end
 
+  test "binary_slice/2" do
+    assert binary_slice("abc", -1..0) == ""
+    assert binary_slice("abc", -5..-5) == ""
+    assert binary_slice("x", 0..0//2) == "x"
+    assert binary_slice("abcde", 1..3//2) == "bd"
+  end
+
   test "sigil_U/2" do
     assert ~U[2015-01-13 13:00:07.123Z] == %DateTime{
              calendar: Calendar.ISO,
@@ -1399,6 +1447,62 @@ defmodule KernelTest do
 
     assert_raise ArgumentError, ~r"reason: :non_utc_offset", fn ->
       Code.eval_string(~s{~U[2015-01-13 13:00:07+00:30]})
+    end
+  end
+
+  describe "dbg/2" do
+    import ExUnit.CaptureIO
+
+    test "prints the given expression and returns its value" do
+      output = capture_io(fn -> assert dbg(List.duplicate(:foo, 3)) == [:foo, :foo, :foo] end)
+      assert output =~ "kernel_test.exs"
+      assert output =~ "KernelTest"
+      assert output =~ "List"
+      assert output =~ "duplicate"
+      assert output =~ ":foo"
+      assert output =~ "3"
+    end
+
+    test "doesn't print any colors if :syntax_colors is []" do
+      output =
+        capture_io(fn ->
+          assert dbg(List.duplicate(:foo, 3), syntax_colors: []) == [:foo, :foo, :foo]
+        end)
+
+      assert output =~ "kernel_test.exs"
+      assert output =~ "KernelTest."
+      assert output =~ "List.duplicate(:foo, 3)"
+      assert output =~ "[:foo, :foo, :foo]"
+      refute output =~ "\\e["
+    end
+
+    test "prints binding() if no arguments are given" do
+      my_var = 1
+      my_other_var = :foo
+
+      output = capture_io(fn -> dbg() end)
+
+      assert output =~ "binding()"
+      assert output =~ "my_var:"
+      assert output =~ "my_other_var:"
+    end
+
+    test "is not allowed in guards" do
+      message = "invalid expression in guard, dbg is not allowed in guards"
+
+      assert_raise ArgumentError, Regex.compile!(message), fn ->
+        defmodule DbgGuard do
+          def dbg_guard() when dbg(1), do: true
+        end
+      end
+    end
+
+    test "is not allowed in pattern matches" do
+      message = "invalid expression in match, dbg is not allowed in patterns"
+
+      assert_eval_raise(ArgumentError, Regex.compile!(message), """
+      {:ok, dbg()} = make_ref()
+      """)
     end
   end
 end

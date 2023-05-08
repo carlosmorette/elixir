@@ -29,7 +29,13 @@ defmodule OptionParser do
   @type argv :: [String.t()]
   @type parsed :: keyword
   @type errors :: [{String.t(), String.t() | nil}]
-  @type options :: [switches: keyword, strict: keyword, aliases: keyword]
+  @type options :: [
+          switches: keyword,
+          strict: keyword,
+          aliases: keyword,
+          allow_nonexistent_atoms: boolean,
+          return_separator: boolean
+        ]
 
   defmodule ParseError do
     defexception [:message]
@@ -78,6 +84,7 @@ defmodule OptionParser do
     * `:switches` or `:strict` - see the "Switch definitions" section below
     * `:allow_nonexistent_atoms` - see the "Parsing unknown switches" section below
     * `:aliases` - see the "Aliases" section below
+    * `:return_separator` - see the "Return separator" section below
 
   ## Switch definitions
 
@@ -225,6 +232,21 @@ defmodule OptionParser do
       ...> )
       {[unlock: "path/to/file", unlock: "path/to/another/file"], [], []}
 
+  ## Return separator
+
+  The separator `--` implies options should no longer be processed.
+  By default, the separator is not returned as parts of the arguments,
+  but that can be changed via the `:return_separator` option:
+
+      iex> OptionParser.parse(["--", "lib"], return_separator: true, strict: [])
+      {[], ["--", "lib"], []}
+
+      iex> OptionParser.parse(["--no-halt", "--", "lib"], return_separator: true, switches: [halt: :boolean])
+      {[halt: false], ["--", "lib"], []}
+
+      iex> OptionParser.parse(["script.exs", "--no-halt", "--", "foo"], return_separator: true, switches: [halt: :boolean])
+      {[{:halt, false}], ["script.exs", "--", "foo"], []}
+
   """
   @spec parse(argv, options) :: {parsed, argv, errors}
   def parse(argv, opts \\ []) when is_list(argv) and is_list(opts) do
@@ -358,8 +380,15 @@ defmodule OptionParser do
         invalid = if config.strict?, do: [{option, nil} | invalid], else: invalid
         do_parse(rest, config, opts, args, invalid, all?)
 
-      {:error, ["--" | rest]} ->
-        {Enum.reverse(opts), Enum.reverse(args, rest), Enum.reverse(invalid)}
+      {:error, ["--" | rest] = remaining_args} ->
+        args =
+          if config.return_separator? do
+            Enum.reverse(args, remaining_args)
+          else
+            Enum.reverse(args, rest)
+          end
+
+        {Enum.reverse(opts), args, Enum.reverse(invalid)}
 
       {:error, [arg | rest] = remaining_args} ->
         # there is no option
@@ -487,7 +516,7 @@ defmodule OptionParser do
   Keys must be atoms. Keys with `nil` value are discarded,
   boolean values are converted to `--key` or `--no-key`
   (if the value is `true` or `false`, respectively),
-  and all other values are converted using `Kernel.to_string/1`.
+  and all other values are converted using `to_string/1`.
 
   It is advised to pass to `to_argv/2` the same set of `options`
   given to `parse/2`. Some switches can only be reconstructed
@@ -611,6 +640,7 @@ defmodule OptionParser do
     %{
       aliases: opts[:aliases] || [],
       allow_nonexistent_atoms?: opts[:allow_nonexistent_atoms] || false,
+      return_separator?: opts[:return_separator] || false,
       strict?: strict?,
       switches: switches
     }

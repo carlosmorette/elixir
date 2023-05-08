@@ -1,12 +1,12 @@
 -module(elixir_aliases).
 -export([inspect/1, last/1, concat/1, safe_concat/1, format_error/1,
-         ensure_loaded/3, expand/2, store/5]).
+         ensure_loaded/3, expand/2, expand_or_concat/2, store/5]).
 -include("elixir.hrl").
 
 inspect(Atom) when is_atom(Atom) ->
   case elixir_config:is_bootstrap() of
-    true  -> atom_to_binary(Atom, utf8);
-    false -> 'Elixir.Code.Identifier':inspect_as_atom(Atom)
+    true  -> atom_to_binary(Atom);
+    false -> 'Elixir.Macro':inspect_atom(literal, Atom)
   end.
 
 %% Store an alias in the given scope
@@ -75,9 +75,21 @@ expand({'__aliases__', Meta, [H | T]}, Aliases, E) when is_atom(H) ->
 expand({'__aliases__', _Meta, List}, _Aliases, _E) ->
   List.
 
+%% Expands or concat if possible.
+
+expand_or_concat(Aliases, E) ->
+  case expand(Aliases, E) of
+    [H | T] when is_atom(H) -> concat([H | T]);
+    AtomOrList -> AtomOrList
+  end.
+
 %% Ensure a module is loaded before its usage.
 
-ensure_loaded(_Meta, 'Elixir.Kernel', _E) -> ok;
+%% Skip Kernel verification for bootstrap purposes.
+ensure_loaded(_Meta, 'Elixir.Kernel', _E) ->
+  ok;
+ensure_loaded(Meta, Module, #{module := Module} = E) ->
+  elixir_errors:file_error(Meta, E, ?MODULE, {circular_module, Module});
 ensure_loaded(Meta, Module, E) ->
   case code:ensure_loaded(Module) of
     {module, Module} ->
@@ -90,18 +102,12 @@ ensure_loaded(Meta, Module, E) ->
 
         Wait ->
           Kind = case lists:member(Module, ?key(E, context_modules)) of
-            true ->
-              case ?key(E, module) of
-                Module -> circular_module;
-                _ -> scheduled_module
-              end;
-            false when Wait == deadlock ->
-              deadlock_module;
-            false ->
-              unloaded_module
+            true -> scheduled_module;
+            false when Wait == deadlock -> deadlock_module;
+            false -> unloaded_module
           end,
 
-          elixir_errors:form_error(Meta, E, ?MODULE, {Kind, Module})
+          elixir_errors:file_error(Meta, E, ?MODULE, {Kind, Module})
       end
   end.
 
@@ -133,7 +139,7 @@ concat(Args)      -> binary_to_atom(do_concat(Args), utf8).
 safe_concat(Args) -> binary_to_existing_atom(do_concat(Args), utf8).
 
 do_concat([H | T]) when is_atom(H), H /= nil ->
-  do_concat([atom_to_binary(H, utf8) | T]);
+  do_concat([atom_to_binary(H) | T]);
 do_concat([<<"Elixir.", _/binary>>=H | T]) ->
   do_concat(T, H);
 do_concat([<<"Elixir">>=H | T]) ->
@@ -144,7 +150,7 @@ do_concat(T) ->
 do_concat([nil | T], Acc) ->
   do_concat(T, Acc);
 do_concat([H | T], Acc) when is_atom(H) ->
-  do_concat(T, <<Acc/binary, $., (to_partial(atom_to_binary(H, utf8)))/binary>>);
+  do_concat(T, <<Acc/binary, $., (to_partial(atom_to_binary(H)))/binary>>);
 do_concat([H | T], Acc) when is_binary(H) ->
   do_concat(T, <<Acc/binary, $., (to_partial(H))/binary>>);
 do_concat([], Acc) ->
@@ -201,7 +207,7 @@ format_error({scheduled_module, Module}) ->
 
 format_error({circular_module, Module}) ->
   io_lib:format(
-    "you are trying to use the module ~ts which is currently being defined.\n"
+    "you are trying to use/import/require the module ~ts which is currently being defined.\n"
     "\n"
     "This may happen if you accidentally override the module you want to use. For example:\n"
     "\n"

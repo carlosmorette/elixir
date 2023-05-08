@@ -36,7 +36,7 @@ defmodule Mix.Task.Compiler do
     @type t :: %__MODULE__{
             file: Path.t(),
             severity: severity,
-            message: String.t(),
+            message: IO.chardata(),
             position: position,
             compiler_name: String.t(),
             details: any
@@ -61,8 +61,8 @@ defmodule Mix.Task.Compiler do
 
     @typedoc """
     Where in a file the diagnostic applies. Can be either a line number,
-    a range specified as `{start_line, start_col, end_line, end_col}`,
-    or `nil` if unknown.
+    a `{line, column}` tuple, a range specified as `{start_line, start_col,
+    end_line, end_col}`. `0` line represents unknown.
 
     Line numbers are one-based, and column numbers in a range are zero-based and refer
     to the cursor position at the start of the character at that index. For example,
@@ -70,8 +70,8 @@ defmodule Mix.Task.Compiler do
     first line, the range would be `{1, 0, 1, n}`.
     """
     @type position ::
-            nil
-            | pos_integer
+            non_neg_integer
+            | {pos_integer, non_neg_integer}
             | {pos_integer, non_neg_integer, pos_integer, non_neg_integer}
 
     @enforce_keys [:file, :severity, :message, :position, :compiler_name]
@@ -106,6 +106,10 @@ defmodule Mix.Task.Compiler do
   it receives a tuple with current status and the list
   of diagnostic. It must return the updated status and
   diagnostics.
+
+  If the given compiler does not run (for instance,
+  because an earlier compiler in the stack has aborted),
+  the callback will not be executed.
   """
   @doc since: "1.10.0"
   @spec after_compiler(atom, ({status, [Diagnostic.t()]} -> {status, [Diagnostic.t()]})) :: :ok

@@ -69,12 +69,13 @@ defmodule IEx.Helpers do
   import IEx, only: [dont_display_result: 0]
 
   @doc """
-  Recompiles the current Mix application.
+  Recompiles the current Mix project.
 
   This helper only works when IEx is started with a Mix
   project, for example, `iex -S mix`. Note this function
   simply recompiles Elixir modules, without reloading
-  configuration and without restarting applications.
+  configuration, recompiling dependencies, or restarting
+  applications.
 
   Therefore, any long running process may crash on recompilation,
   as changed modules will be temporarily removed and recompiled,
@@ -97,19 +98,11 @@ defmodule IEx.Helpers do
       consolidation = Mix.Project.consolidation_path(config)
       reenable_tasks(config)
 
-      # No longer allow consolidations to be accessed.
-      Code.delete_path(consolidation)
-      purge_protocols(consolidation)
-
       force? = Keyword.get(options, :force, false)
-      arguments = if force?, do: ["--force"], else: []
+      args = ["--purge-consolidation-path-if-stale", consolidation]
+      args = if force?, do: ["--force" | args], else: args
 
-      {result, _} = Mix.Task.run("compile", arguments)
-
-      # Reenable consolidation and allow them to be loaded.
-      Code.prepend_path(consolidation)
-      purge_protocols(consolidation)
-
+      {result, _} = Mix.Task.run("compile", args)
       result
     else
       IO.puts(IEx.color(:eval_error, "Mix is not running. Please start IEx with: iex -S mix"))
@@ -127,20 +120,6 @@ defmodule IEx.Helpers do
     Mix.Task.reenable("compile.protocols")
     compilers = config[:compilers] || Mix.compilers()
     Enum.each(compilers, &Mix.Task.reenable("compile.#{&1}"))
-  end
-
-  defp purge_protocols(path) do
-    case File.ls(path) do
-      {:ok, beams} ->
-        Enum.each(beams, fn beam ->
-          module = beam |> Path.rootname() |> String.to_atom()
-          :code.purge(module)
-          :code.delete(module)
-        end)
-
-      {:error, _} ->
-        :ok
-    end
   end
 
   @doc """
@@ -255,10 +234,19 @@ defmodule IEx.Helpers do
   and falls back to `EDITOR` if the former is not available.
 
   By default, it attempts to open the file and line using the
-  `file:line` notation. For example, if your editor is called
-  `subl`, it will open the file as:
+  `file:line` notation. For example, for Sublime Text you can
+  set it as:
+
+      ELIXIR_EDITOR="subl"
+
+  Which will then try to open it as:
 
       subl path/to/file:line
+
+  For Visual Studio Code, once enabled on the command line,
+  you can set it to:
+
+      ELIXIR_EDITOR="code --goto"
 
   It is important that you choose an editor command that does
   not block nor that attempts to run an editor directly in the
@@ -266,12 +254,11 @@ defmodule IEx.Helpers do
   configuration so they open up the given file and line in a
   separate window.
 
-  Custom editors are supported by using the `__FILE__` and
-  `__LINE__` notations, for example:
+  For more complex use cases, you can use the `__FILE__` and
+  `__LINE__` notations to explicitly interpolate the file and
+  line into the command:
 
       ELIXIR_EDITOR="my_editor +__LINE__ __FILE__"
-
-  and Elixir will properly interpolate values.
 
   Since this function prints the result returned by the editor,
   `ELIXIR_EDITOR` can be set "echo" if you prefer to display the
@@ -394,10 +381,15 @@ defmodule IEx.Helpers do
   end
 
   @doc """
-  Recompiles and reloads the given `module`.
+  Recompiles and reloads the given `module` or `modules`.
 
-  Please note that all the modules defined in the same
-  file as `module` are recompiled and reloaded.
+  Please note that all the modules defined in the same file as
+  `modules` are recompiled and reloaded. If you want to reload
+  multiple modules, it is best to reload them at the same time,
+  such as in `r [Foo, Bar]`. This is important to avoid false
+  warnings, since the module is only reloaded in memory and its
+  latest information is not persisted to disk. See the "In-memory
+  reloading" section below.
 
   This function is meant to be used for development and
   debugging purposes. Do not depend on it in production code.
@@ -409,35 +401,49 @@ defmodule IEx.Helpers do
   in disk, probably the one where the first definition of the module
   came from, does not change at all.
 
-  Since typespecs and docs are loaded from the .beam file (they
-  are not loaded in memory with the module because there is no need
-  for them to be in memory), they are not reloaded when you reload
-  the module.
+  Since docs, typespecs, and exports information are loaded from the
+  .beam file, they are not reloaded when you invoke this function.
   """
-  def r(module) when is_atom(module) do
-    {:reloaded, module, do_r(module)}
-  end
+  def r(module_or_modules) do
+    modules = List.wrap(module_or_modules)
 
-  defp do_r(module) do
-    unless Code.ensure_loaded?(module) do
-      raise ArgumentError, "could not load nor find module: #{inspect(module)}"
-    end
+    sources =
+      Enum.map(modules, fn module ->
+        unless Code.ensure_loaded?(module) do
+          raise ArgumentError, "could not load nor find module: #{inspect(module)}"
+        end
 
-    source = source(module)
+        source = source(module)
 
-    cond do
-      source == nil ->
-        raise ArgumentError, "could not find source for module: #{inspect(module)}"
+        cond do
+          source == nil ->
+            raise ArgumentError, "could not find source for module: #{inspect(module)}"
 
-      not File.exists?(source) ->
-        raise ArgumentError, "could not find source (#{source}) for module: #{inspect(module)}"
+          not File.exists?(source) ->
+            raise ArgumentError,
+                  "could not find source (#{source}) for module: #{inspect(module)}"
 
-      String.ends_with?(source, ".erl") ->
-        [compile_erlang(source) |> elem(0)]
+          true ->
+            source
+        end
+      end)
 
-      true ->
-        Enum.map(Code.compile_file(source), fn {name, _} -> name end)
-    end
+    {erlang, elixir} = Enum.split_with(sources, &String.ends_with?(&1, ".erl"))
+
+    erlang =
+      for source <- erlang do
+        compile_erlang(source) |> elem(0)
+      end
+
+    elixir =
+      if elixir != [] do
+        {:ok, modules, _warning} = Kernel.ParallelCompiler.compile(elixir)
+        modules
+      else
+        []
+      end
+
+    {:reloaded, erlang ++ elixir}
   end
 
   @doc """
@@ -495,12 +501,15 @@ defmodule IEx.Helpers do
     :code.get_path()
     |> Protocol.extract_protocols()
     |> Enum.uniq()
-    |> Enum.reject(fn protocol -> is_nil(protocol.impl_for(term)) end)
+    |> Enum.filter(fn protocol ->
+      Code.ensure_loaded?(protocol) and function_exported?(protocol, :impl_for, 1) and
+        protocol.impl_for(term) != nil
+    end)
     |> Enum.sort()
     |> Enum.map_join(", ", &inspect/1)
   end
 
-  @runtime_info_topics [:system, :memory, :limits, :applications]
+  @runtime_info_topics [:system, :memory, :limits, :applications, :allocators]
   @doc """
   Prints VM/runtime information such as versions, memory usage and statistics.
 
@@ -539,9 +548,9 @@ defmodule IEx.Helpers do
   end
 
   defp print_topic_info(topics) when is_list(topics) do
-    IO.write(pad_key("Showing topics"))
+    IO.write(pad_key("Showing topics:"))
     IO.puts(inspect(topics))
-    IO.write(pad_key("Additional topics"))
+    IO.write(pad_key("Additional topics:"))
     IO.puts(inspect(@runtime_info_topics -- topics))
     IO.puts("")
     IO.puts("To view a specific topic call runtime_info(topic)")
@@ -551,7 +560,7 @@ defmodule IEx.Helpers do
     print_pane("System and architecture")
 
     print_entry("Elixir version", System.version())
-    print_entry("Erlang/OTP version", :erlang.system_info(:otp_release))
+    print_entry("Erlang/OTP version", System.otp_release())
     print_entry("ERTS version", :erlang.system_info(:version))
     print_entry("Compiled for", :erlang.system_info(:system_architecture))
     print_entry("Schedulers", :erlang.system_info(:schedulers))
@@ -560,12 +569,12 @@ defmodule IEx.Helpers do
 
   defp print_runtime_info_topic(:memory) do
     print_pane("Memory")
-    print_memory("Total", :total)
     print_memory("Atoms", :atom)
     print_memory("Binaries", :binary)
     print_memory("Code", :code)
     print_memory("ETS", :ets)
     print_memory("Processes", :processes)
+    print_memory("Total", :total)
   end
 
   defp print_runtime_info_topic(:limits) do
@@ -580,12 +589,12 @@ defmodule IEx.Helpers do
   end
 
   defp print_runtime_info_topic(:applications) do
-    print_pane("Loaded OTP Applications")
+    print_pane("Loaded OTP applications")
     started = Application.started_applications()
     loaded = Application.loaded_applications()
 
     for {app, _, version} = entry <- Enum.sort(loaded) do
-      IO.write(pad_key(app))
+      IO.write(pad_key(Atom.to_string(app)))
       IO.write(String.pad_trailing("#{version}", 20))
 
       if entry in started do
@@ -596,6 +605,38 @@ defmodule IEx.Helpers do
     end
 
     :ok
+  end
+
+  @allocator_column_padding 12
+  @allocator_size_padding 19
+
+  defp print_runtime_info_topic(:allocators) do
+    allocator_sizes_map = get_allocator_sizes()
+
+    if Enum.empty?(allocator_sizes_map) do
+      IO.puts(IEx.color(:eval_error, "Could not get allocator sizes."))
+    else
+      print_pane("Memory allocators")
+
+      IO.puts([
+        String.duplicate(" ", @allocator_column_padding),
+        String.pad_leading("Block size", @allocator_size_padding),
+        String.pad_leading("Carrier size", @allocator_size_padding),
+        String.pad_leading("Max carrier size", @allocator_size_padding)
+      ])
+
+      print_allocator("Temporary", allocator_sizes_map.temp_alloc)
+      print_allocator("Short-lived", allocator_sizes_map.sl_alloc)
+      print_allocator("STD", allocator_sizes_map.std_alloc)
+      print_allocator("Long-lived", allocator_sizes_map.ll_alloc)
+      print_allocator("Erlang heap", allocator_sizes_map.eheap_alloc)
+      print_allocator("ETS", allocator_sizes_map.ets_alloc)
+      print_allocator("Fix", allocator_sizes_map.fix_alloc)
+      print_allocator("Literal", allocator_sizes_map.literal_alloc)
+      print_allocator("Binary", allocator_sizes_map.binary_alloc)
+      print_allocator("Driver", allocator_sizes_map.driver_alloc)
+      print_allocator("Total", allocator_sizes_map.total)
+    end
   end
 
   defp print_pane(msg) do
@@ -625,6 +666,71 @@ defmodule IEx.Helpers do
     IO.puts("#{pad_key(key)}#{format_bytes(value)}")
   end
 
+  defp print_allocator(title, %{
+         block_size: block_size,
+         carrier_size: carriers_size,
+         max_carrier_size: max_carriers_size
+       }) do
+    IO.puts([
+      String.pad_trailing(title, @allocator_column_padding),
+      block_size |> format_bytes(:KB) |> String.pad_leading(@allocator_size_padding),
+      carriers_size |> format_bytes(:KB) |> String.pad_leading(@allocator_size_padding),
+      max_carriers_size |> format_bytes(:KB) |> String.pad_leading(@allocator_size_padding)
+    ])
+  end
+
+  defp get_allocator_sizes() do
+    alloc_util_allocators = :erlang.system_info(:alloc_util_allocators)
+
+    allocators_map =
+      Map.new(
+        [:total | alloc_util_allocators],
+        &{&1, %{block_size: 0, carrier_size: 0, max_carrier_size: 0}}
+      )
+
+    try do
+      for {allocator, allocator_instances} <-
+            :erlang.system_info({:allocator_sizes, alloc_util_allocators}),
+          {:instance, _, instance_info} <- allocator_instances,
+          {_, [{:blocks, blocks}, {:carriers_size, ccs, mcs, _}]} <-
+            instance_info,
+          reduce: allocators_map do
+        acc ->
+          cbs =
+            case blocks do
+              [{_, [{:size, bs, _, _}]}] -> bs
+              _ -> 0
+            end
+
+          %{
+            block_size: block_size,
+            carrier_size: carrier_size,
+            max_carrier_size: max_carrier_size
+          } = Map.fetch!(acc, allocator)
+
+          %{
+            block_size: total_block_size,
+            carrier_size: total_carrier_size,
+            max_carrier_size: total_max_carrier_size
+          } = Map.fetch!(acc, :total)
+
+          acc
+          |> Map.replace!(allocator, %{
+            block_size: block_size + cbs,
+            carrier_size: carrier_size + ccs,
+            max_carrier_size: max_carrier_size + mcs
+          })
+          |> Map.replace!(:total, %{
+            block_size: total_block_size + cbs,
+            carrier_size: total_carrier_size + ccs,
+            max_carrier_size: total_max_carrier_size + mcs
+          })
+      end
+    rescue
+      _ -> %{}
+    end
+  end
+
   defp format_bytes(bytes) when is_integer(bytes) do
     cond do
       bytes >= memory_unit(:GB) -> format_bytes(bytes, :GB)
@@ -649,7 +755,7 @@ defmodule IEx.Helpers do
   defp memory_unit(:MB), do: 1024 * 1024
   defp memory_unit(:KB), do: 1024
 
-  defp pad_key(key), do: String.pad_trailing("#{key}:", 20, " ")
+  defp pad_key(key), do: String.pad_trailing(key, 21, " ")
 
   @doc """
   Clears out all messages sent to the shell's inbox and prints them out.
@@ -760,7 +866,7 @@ defmodule IEx.Helpers do
     # print items in multiple columns (2 columns in the worst case)
     lengths = Enum.map(list, &String.length(&1))
     max_length = max_length(lengths)
-    offset = min(max_length, 30) + 5
+    offset = min(max_length, 30) + 4
     print_table(list, printer, offset)
   end
 
@@ -774,8 +880,11 @@ defmodule IEx.Helpers do
           length
         end
 
-      IO.write(printer.(item, offset))
-      length + offset
+      printed = printer.(item, offset)
+      actual_offset = String.length(printed) + 1
+
+      IO.write(printed <> " ")
+      length + actual_offset
     end)
 
     IO.puts("")
@@ -817,6 +926,9 @@ defmodule IEx.Helpers do
   until the next breakpoint, which will automatically yield control
   back to IEx without requesting permission to pry.
 
+  If you simply want to move to the next line of the current breakpoint,
+  use `n/0` or `next/0` instead.
+
   If the running process terminates, a new IEx session is
   started.
 
@@ -827,14 +939,51 @@ defmodule IEx.Helpers do
   @doc since: "1.5.0"
   def continue do
     if iex_server = Process.get(:iex_server) do
-      send(iex_server, {:continue, self()})
+      send(iex_server, {:continue, self(), false})
     end
 
     dont_display_result()
   end
 
   @doc """
-  Macro-based shortcut for `IEx.break!/4`.
+  Goes to the next line of the current breakpoint.
+
+  This is usually called by sessions started with `IEx.break!/4`.
+  If instead of the next line you want to move to the next breakpoint,
+  call `continue/0` instead.
+
+  While the process executes, the user will no longer have
+  control of the shell. If you would rather start a new shell,
+  use `respawn/0` instead.
+  """
+  @doc since: "1.14.0"
+  def next do
+    if iex_server = Process.get(:iex_server) do
+      send(iex_server, {:continue, self(), true})
+    end
+
+    dont_display_result()
+  end
+
+  @doc """
+  A shortcut for `next/0`.
+  """
+  @doc since: "1.14.0"
+  def n do
+    next()
+  end
+
+  @doc """
+  Sets up a breakpoint in the AST of shape `Module.function/arity`
+  with the given number of `stops`.
+
+  See `IEx.break!/4` for a complete description of breakpoints
+  in IEx.
+
+  ## Examples
+
+      break! URI.decode_query/2
+
   """
   @doc since: "1.5.0"
   defmacro break!(ast, stops \\ 1) do
@@ -850,6 +999,11 @@ defmodule IEx.Helpers do
 
   See `IEx.break!/4` for a complete description of breakpoints
   in IEx.
+
+  ## Examples
+
+      break! URI, :decode_query, 2
+
   """
   @doc since: "1.5.0"
   defdelegate break!(module, function, arity, stops \\ 1), to: IEx
@@ -1053,11 +1207,10 @@ defmodule IEx.Helpers do
   end
 
   @doc """
-  Injects the contents of the file at `path` as if it was typed into
-  the shell.
+  Injects the contents of the file at `path`.
 
   This would be the equivalent of getting all of the file contents and
-  packing it all into a single line in IEx and executing it.
+  pasting it all at once in IEx and executing it.
 
   By default, the contents of a `.iex.exs` file in the same directory
   as you are starting IEx are automatically imported. See the section
@@ -1159,16 +1312,33 @@ defmodule IEx.Helpers do
   defp history, do: Process.get(:iex_history)
 
   @doc """
-  Creates a PID from `string`.
+  Creates a PID from `string` or `atom`.
 
   ## Examples
 
       iex> pid("0.21.32")
       #PID<0.21.32>
 
+      iex> pid("#PID<0.21.32>")
+      #PID<0.21.32>
+
+      iex> pid(:init)
+      #PID<0.0.0>
+
   """
+  def pid("#PID<" <> string) do
+    :erlang.list_to_pid(~c"<#{string}")
+  end
+
   def pid(string) when is_binary(string) do
-    :erlang.list_to_pid('<#{string}>')
+    :erlang.list_to_pid(~c"<#{string}>")
+  end
+
+  def pid(name) when is_atom(name) do
+    case Process.whereis(name) do
+      p when is_pid(p) -> p
+      _ -> raise ArgumentError, "could not find registered process with name: #{inspect(name)}"
+    end
   end
 
   @doc """
@@ -1186,9 +1356,9 @@ defmodule IEx.Helpers do
   def pid(x, y, z)
       when is_integer(x) and x >= 0 and is_integer(y) and y >= 0 and is_integer(z) and z >= 0 do
     :erlang.list_to_pid(
-      '<' ++
+      ~c"<" ++
         Integer.to_charlist(x) ++
-        '.' ++ Integer.to_charlist(y) ++ '.' ++ Integer.to_charlist(z) ++ '>'
+        ~c"." ++ Integer.to_charlist(y) ++ ~c"." ++ Integer.to_charlist(z) ++ ~c">"
     )
   end
 
@@ -1203,7 +1373,7 @@ defmodule IEx.Helpers do
   """
   @doc since: "1.8.0"
   def port(string) when is_binary(string) do
-    :erlang.list_to_port('#Port<#{string}>')
+    :erlang.list_to_port(~c"#Port<#{string}>")
   end
 
   @doc """
@@ -1221,7 +1391,7 @@ defmodule IEx.Helpers do
   def port(major, minor)
       when is_integer(major) and major >= 0 and is_integer(minor) and minor >= 0 do
     :erlang.list_to_port(
-      '#Port<' ++ Integer.to_charlist(major) ++ '.' ++ Integer.to_charlist(minor) ++ '>'
+      ~c"#Port<" ++ Integer.to_charlist(major) ++ ~c"." ++ Integer.to_charlist(minor) ++ ~c">"
     )
   end
 
@@ -1236,7 +1406,7 @@ defmodule IEx.Helpers do
   """
   @doc since: "1.6.0"
   def ref(string) when is_binary(string) do
-    :erlang.list_to_ref('#Ref<#{string}>')
+    :erlang.list_to_ref(~c"#Ref<#{string}>")
   end
 
   @doc """
@@ -1253,11 +1423,11 @@ defmodule IEx.Helpers do
       when is_integer(w) and w >= 0 and is_integer(x) and x >= 0 and is_integer(y) and y >= 0 and
              is_integer(z) and z >= 0 do
     :erlang.list_to_ref(
-      '#Ref<' ++
+      ~c"#Ref<" ++
         Integer.to_charlist(w) ++
-        '.' ++
+        ~c"." ++
         Integer.to_charlist(x) ++
-        '.' ++ Integer.to_charlist(y) ++ '.' ++ Integer.to_charlist(z) ++ '>'
+        ~c"." ++ Integer.to_charlist(y) ++ ~c"." ++ Integer.to_charlist(z) ++ ~c">"
     )
   end
 
@@ -1286,8 +1456,8 @@ defmodule IEx.Helpers do
 
   """
   def nl(nodes \\ Node.list(), module) when is_list(nodes) and is_atom(module) do
-    case :code.get_object_code(module) do
-      {^module, bin, beam_path} ->
+    case get_beam_and_path(module) do
+      {bin, beam_path} ->
         results =
           for node <- nodes do
             case :rpc.call(node, :code, :load_binary, [module, beam_path, bin]) do
@@ -1302,6 +1472,15 @@ defmodule IEx.Helpers do
 
       _otherwise ->
         {:error, :nofile}
+    end
+  end
+
+  defp get_beam_and_path(module) do
+    with {^module, beam, filename} <- :code.get_object_code(module),
+         {:ok, ^module} <- beam |> :beam_lib.info() |> Keyword.fetch(:module) do
+      {beam, filename}
+    else
+      _ -> :error
     end
   end
 end

@@ -5,15 +5,6 @@ defmodule StringTest do
 
   doctest String
 
-  test "heredoc with heredoc inside interpolation" do
-    assert """
-           1
-           #{"""
-           2
-           """}
-           """ == "1\n2\n\n"
-  end
-
   test "next_codepoint/1" do
     assert String.next_codepoint("ésoj") == {"é", "soj"}
     assert String.next_codepoint(<<255>>) == {<<255>>, ""}
@@ -82,6 +73,19 @@ defmodule StringTest do
     assert String.split("noël", "") == ["", "n", "o", "ë", "l", ""]
     assert String.split("x-", "-", parts: 2, trim: true) == ["x"]
     assert String.split("x-x-", "-", parts: 3, trim: true) == ["x", "x"]
+
+    assert String.split("hello", []) == ["hello"]
+    assert String.split("hello", [], trim: true) == ["hello"]
+    assert String.split("", []) == [""]
+    assert String.split("", [], trim: true) == []
+
+    assert_raise ArgumentError, fn ->
+      String.split("a,b,c", [""])
+    end
+
+    assert_raise ArgumentError, fn ->
+      String.split("a,b,c", [""])
+    end
   end
 
   test "split/2,3 with regex" do
@@ -103,6 +107,20 @@ defmodule StringTest do
     assert String.split("x-x-", pattern, parts: 3, trim: true) == ["x", "x"]
   end
 
+  test "split/2,3 with malformed" do
+    assert String.split(<<225, 158, 128, 225, 158, 185, 225>>, "", parts: 1) ==
+             [<<225, 158, 128, 225, 158, 185, 225>>]
+
+    assert String.split(<<225, 158, 128, 225, 158, 185, 225>>, "", parts: 2) ==
+             ["", <<225, 158, 128, 225, 158, 185, 225>>]
+
+    assert String.split(<<225, 158, 128, 225, 158, 185, 225>>, "", parts: 3) ==
+             ["", "កឹ", <<225>>]
+
+    assert String.split(<<225, 158, 128, 225, 158, 185, 225>>, "", parts: 4) ==
+             ["", "កឹ", <<225>>, ""]
+  end
+
   test "splitter/2,3" do
     assert String.splitter("a,b,c", ",") |> Enum.to_list() == ["a", "b", "c"]
     assert String.splitter("a,b", ".") |> Enum.to_list() == ["a,b"]
@@ -113,6 +131,17 @@ defmodule StringTest do
     assert String.splitter(" a b c ", " ", trim: true) |> Enum.to_list() == ["a", "b", "c"]
     assert String.splitter(" a b c ", " ", trim: true) |> Enum.take(1) == ["a"]
     assert String.splitter(" a b c ", " ", trim: true) |> Enum.take(2) == ["a", "b"]
+
+    assert String.splitter("hello", []) |> Enum.to_list() == ["hello"]
+    assert String.splitter("hello", [], trim: true) |> Enum.to_list() == ["hello"]
+    assert String.splitter("", []) |> Enum.to_list() == [""]
+    assert String.splitter("", [], trim: true) |> Enum.to_list() == []
+
+    assert String.splitter("1,2 3,4 5", "") |> Enum.take(4) == ["", "1", ",", "2"]
+
+    assert_raise ArgumentError, fn ->
+      String.splitter("a", [""])
+    end
   end
 
   test "split_at/2" do
@@ -138,6 +167,20 @@ defmodule StringTest do
     assert_raise FunctionClauseError, fn ->
       String.split_at("abc", -0.1)
     end
+  end
+
+  test "split_at/2 with malformed" do
+    assert String.split_at(<<?a, 195, 10, ?a>>, 2) == {<<?a, 195>>, <<10, ?a>>}
+    assert String.split_at(<<107, 205, 135, 184>>, 1) == {<<107, 205, 135>>, <<184>>}
+
+    assert String.split_at(<<225, 158, 128, 225, 158, 185, 225>>, 0) ==
+             {"", <<225, 158, 128, 225, 158, 185, 225>>}
+
+    assert String.split_at(<<225, 158, 128, 225, 158, 185, 225>>, 1) ==
+             {"កឹ", <<225>>}
+
+    assert String.split_at(<<225, 158, 128, 225, 158, 185, 225>>, 2) ==
+             {<<225, 158, 128, 225, 158, 185, 225>>, ""}
   end
 
   test "upcase/1" do
@@ -431,6 +474,18 @@ defmodule StringTest do
       assert String.replace("ELIXIR", "", ".") == ".E.L.I.X.I.R."
       assert String.replace("ELIXIR", "", ".", global: true) == ".E.L.I.X.I.R."
       assert String.replace("ELIXIR", "", ".", global: false) == ".ELIXIR"
+
+      assert_raise ArgumentError, fn ->
+        String.replace("elixir", [""], "")
+      end
+    end
+
+    test "with empty string and string replacement with malformed" do
+      assert String.replace(<<225, 158, 128, 225, 158, 185, 225>>, "", ".") == ".កឹ.\xE1."
+    end
+
+    test "with empty pattern list" do
+      assert String.replace("elixir", [], "anything") == "elixir"
     end
 
     test "with match pattern and string replacement" do
@@ -559,6 +614,60 @@ defmodule StringTest do
     assert String.next_grapheme("") == nil
   end
 
+  describe "randomized" do
+    test "next_grapheme" do
+      for _ <- 1..10 do
+        bin = :crypto.strong_rand_bytes(20)
+
+        try do
+          bin |> Stream.unfold(&String.next_grapheme/1) |> Enum.to_list()
+        rescue
+          # Ignore malformed pictographic sequences
+          _ -> :ok
+        else
+          list ->
+            assert Enum.all?(list, &is_binary/1), "cannot build graphemes for #{inspect(bin)}"
+        end
+      end
+    end
+
+    test "split empty" do
+      for _ <- 1..10 do
+        bin = :crypto.strong_rand_bytes(20)
+
+        try do
+          String.split(bin, "")
+        rescue
+          # Ignore malformed pictographic sequences
+          _ -> :ok
+        else
+          split ->
+            assert Enum.all?(split, &is_binary/1), "cannot split #{inspect(bin)}"
+            assert IO.iodata_to_binary(split) == bin
+        end
+      end
+    end
+
+    test "graphemes" do
+      for _ <- 1..10 do
+        bin = :crypto.strong_rand_bytes(20)
+
+        try do
+          String.graphemes(bin)
+        rescue
+          # Ignore malformed pictographic sequences
+          _ -> :ok
+        else
+          graphemes ->
+            assert Enum.all?(graphemes, &is_binary/1),
+                   "cannot build graphemes for #{inspect(bin)}"
+
+            assert IO.iodata_to_binary(graphemes) == bin
+        end
+      end
+    end
+  end
+
   test "first/1" do
     assert String.first("elixir") == "e"
     assert String.first("íelixr") == "í"
@@ -616,7 +725,7 @@ defmodule StringTest do
     end
   end
 
-  test "slice/2,3" do
+  test "slice/3" do
     assert String.slice("elixir", 1, 3) == "lix"
     assert String.slice("あいうえお", 2, 2) == "うえ"
     assert String.slice("ειξήριολ", 2, 3) == "ξήρ"
@@ -626,9 +735,9 @@ defmodule StringTest do
     assert String.slice("elixir", -3, 2) == "xi"
     assert String.slice("あいうえお", -4, 3) == "いうえ"
     assert String.slice("ειξήριολ", -5, 3) == "ήρι"
-    assert String.slice("elixir", -10, 1) == ""
-    assert String.slice("あいうえお", -10, 2) == ""
-    assert String.slice("ειξήριολ", -10, 3) == ""
+    assert String.slice("elixir", -10, 1) == "e"
+    assert String.slice("あいうえお", -10, 2) == "あい"
+    assert String.slice("ειξήριολ", -10, 3) == "ειξ"
     assert String.slice("elixir", 8, 2) == ""
     assert String.slice("あいうえお", 6, 2) == ""
     assert String.slice("ειξήριολ", 8, 1) == ""
@@ -636,13 +745,17 @@ defmodule StringTest do
     assert String.slice("elixir", 0, 0) == ""
     assert String.slice("elixir", 5, 0) == ""
     assert String.slice("elixir", -5, 0) == ""
+    assert String.slice("elixir", -10, 10) == "elixir"
     assert String.slice("", 0, 1) == ""
     assert String.slice("", 1, 1) == ""
+  end
 
+  test "slice/2" do
     assert String.slice("elixir", 0..-2) == "elixi"
     assert String.slice("elixir", 1..3) == "lix"
     assert String.slice("elixir", -5..-3) == "lix"
     assert String.slice("elixir", -5..3) == "lix"
+    assert String.slice("elixir", -10..10) == "elixir"
     assert String.slice("あいうえお", 2..3) == "うえ"
     assert String.slice("ειξήριολ", 2..4) == "ξήρ"
     assert String.slice("elixir", 3..6) == "xir"
@@ -661,6 +774,34 @@ defmodule StringTest do
     assert String.slice("あいうえお", -10..-15) == ""
     assert String.slice("hello あいうえお Unicode", 8..-1) == "うえお Unicode"
     assert String.slice("abc", -1..14) == "c"
+    assert String.slice("a·̀ͯ‿.⁀:", 0..-2) == "a·̀ͯ‿.⁀"
+
+    assert_raise FunctionClauseError, fn ->
+      String.slice(nil, 0..1)
+    end
+  end
+
+  test "slice/2 with steps" do
+    assert String.slice("elixir", 0..-2//2) == "eii"
+    assert String.slice("elixir", 1..3//2) == "lx"
+    assert String.slice("elixir", -5..-3//2) == "lx"
+    assert String.slice("elixir", -5..3//2) == "lx"
+    assert String.slice("あいうえお", 2..3//2) == "う"
+    assert String.slice("ειξήριολ", 2..4//2) == "ξρ"
+    assert String.slice("elixir", 3..6//2) == "xr"
+    assert String.slice("あいうえお", 3..7//2) == "え"
+    assert String.slice("ειξήριολ", 5..8//2) == "ιλ"
+    assert String.slice("elixir", -3..-2//2) == "x"
+    assert String.slice("あいうえお", -4..-2//2) == "いえ"
+    assert String.slice("ειξήριολ", -5..-3//2) == "ήι"
+    assert String.slice("elixir", 8..9//2) == ""
+    assert String.slice("", 0..0//2) == ""
+    assert String.slice("", 1..1//2) == ""
+    assert String.slice("あいうえお", -2..-4//2) == ""
+    assert String.slice("あいうえお", -10..-15//2) == ""
+    assert String.slice("hello あいうえお Unicode", 8..-1//2) == "うおUioe"
+    assert String.slice("abc", -1..14//2) == "c"
+    assert String.slice("a·̀ͯ‿.⁀:", 0..-2//2) == "a‿⁀"
   end
 
   test "valid?/1" do
@@ -671,6 +812,14 @@ defmodule StringTest do
 
     refute String.valid?(<<0xFFFF::16>>)
     refute String.valid?("asd" <> <<0xFFFF::16>>)
+
+    assert String.valid?("afdsafdsafds", :fast_ascii)
+    assert String.valid?("øsdfhøsdfh", :fast_ascii)
+    assert String.valid?("dskfjあskadskfjあska", :fast_ascii)
+    assert String.valid?(<<0xEF, 0xB7, 0x90, 0xEF, 0xB7, 0x90, 0xEF, 0xB7, 0x90>>, :fast_ascii)
+
+    refute String.valid?(<<0xFFFF::16>>, :fast_ascii)
+    refute String.valid?("asdasdasd" <> <<0xFFFF::16>>, :fast_ascii)
   end
 
   test "chunk/2 with :valid trait" do
@@ -693,6 +842,8 @@ defmodule StringTest do
     assert String.starts_with?("hello", "he")
     assert String.starts_with?("hello", "hello")
     refute String.starts_with?("hello", [])
+    assert String.starts_with?("hello", "")
+    assert String.starts_with?("hello", [""])
     assert String.starts_with?("hello", ["hellö", "hell"])
     assert String.starts_with?("エリクシア", "エリ")
     refute String.starts_with?("hello", "lo")
@@ -718,6 +869,8 @@ defmodule StringTest do
     assert String.contains?("elixir of life", "of")
     assert String.contains?("エリクシア", "シ")
     refute String.contains?("elixir of life", [])
+    assert String.contains?("elixir of life", "")
+    assert String.contains?("elixir of life", [""])
     assert String.contains?("elixir of life", ["mercury", "life"])
     refute String.contains?("elixir of life", "death")
     refute String.contains?("エリクシア", "仙")

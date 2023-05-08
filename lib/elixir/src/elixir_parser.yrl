@@ -5,13 +5,13 @@ Nonterminals
   bracket_expr bracket_at_expr bracket_arg matched_expr unmatched_expr
   unmatched_op_expr matched_op_expr no_parens_op_expr no_parens_many_expr
   comp_op_eol at_op_eol unary_op_eol and_op_eol or_op_eol capture_op_eol
-  dual_op_eol mult_op_eol concat_op_eol xor_op_eol pipe_op_eol stab_op_eol
-  arrow_op_eol match_op_eol when_op_eol in_op_eol in_match_op_eol
-  type_op_eol rel_op_eol ternary_op_eol
+  dual_op_eol mult_op_eol power_op_eol concat_op_eol xor_op_eol pipe_op_eol
+  stab_op_eol arrow_op_eol match_op_eol when_op_eol in_op_eol in_match_op_eol
+  type_op_eol rel_op_eol range_op_eol ternary_op_eol
   open_paren close_paren empty_paren eoe
   list list_args open_bracket close_bracket
   tuple open_curly close_curly
-  bit_string open_bit close_bit
+  bitstring open_bit close_bit
   map map_op map_close map_args struct_expr struct_op
   assoc_op_eol assoc_expr assoc_base assoc_update assoc_update_kw assoc
   container_args_base container_args
@@ -24,19 +24,17 @@ Nonterminals
   dot_op dot_alias dot_bracket_identifier dot_call_identifier
   dot_identifier dot_op_identifier dot_do_identifier dot_paren_identifier
   do_block fn_eoe do_eoe end_eoe block_eoe block_item block_list
-  number
   .
 
 Terminals
   identifier kw_identifier kw_identifier_safe kw_identifier_unsafe bracket_identifier
-  paren_identifier do_identifier block_identifier
+  paren_identifier do_identifier block_identifier op_identifier
   fn 'end' alias
   atom atom_quoted atom_safe atom_unsafe bin_string list_string sigil
   bin_heredoc list_heredoc
-  dot_call_op op_identifier
   comp_op at_op unary_op and_op or_op arrow_op match_op in_op in_match_op
-  type_op dual_op mult_op concat_op xor_op pipe_op stab_op when_op assoc_op
-  capture_op rel_op ternary_op
+  type_op dual_op mult_op power_op concat_op range_op xor_op pipe_op stab_op when_op
+  capture_int capture_op assoc_op rel_op ternary_op dot_call_op
   'true' 'false' 'nil' 'do' eol ';' ',' '.'
   '(' ')' '[' ']' '{' '}' '<<' '>>' '%{}' '%'
   int flt char
@@ -57,6 +55,7 @@ Expect 3.
 %% Note though the operator => in practice has lower precedence
 %% than all others, its entry in the table is only to support the
 %% %{user | foo => bar} syntax.
+
 Left       5 do.
 Right     10 stab_op_eol.     %% ->
 Left      20 ','.
@@ -75,9 +74,11 @@ Left     160 arrow_op_eol.    %% |>, <<<, >>>, <<~, ~>>, <~, ~>, <~>, <|>
 Left     170 in_op_eol.       %% in, not in
 Left     180 xor_op_eol.      %% ^^^
 Right    190 ternary_op_eol.  %% //
-Right    200 concat_op_eol.   %% ++, --, +++, ---, <>, ..
+Right    200 concat_op_eol.   %% ++, --, +++, ---, <>
+Right    200 range_op_eol.    %% ..
 Left     210 dual_op_eol.     %% +, -
 Left     220 mult_op_eol.     %% *, /
+Left     230 power_op_eol.    %% **
 Nonassoc 300 unary_op_eol.    %% +, -, !, ^, not, ~~~
 Left     310 dot_call_op.
 Left     310 dot_op.          %% .
@@ -119,8 +120,8 @@ expr -> unmatched_expr : '$1'.
 %%
 %% Note, in particular, that no_parens_one_ambig expressions are
 %% ambiguous and are interpreted such that the outer function has
-%% arity 1 (for instance, `f g a, b` is interpreted as `f(g(a, b))` rather
-%% than `f(g(a), b)`). Hence the name, no_parens_one_ambig.
+%% arity 1. For instance, `f g a, b` is interpreted as `f(g(a, b))` rather
+%% than `f(g(a), b)`. Hence the name, no_parens_one_ambig.
 %%
 %% The distinction is required because we can't, for example, have
 %% a function call with a do block as argument inside another do
@@ -152,10 +153,6 @@ matched_expr -> access_expr kw_identifier : error_invalid_kw_identifier('$2').
 unmatched_expr -> matched_expr unmatched_op_expr : build_op('$1', '$2').
 unmatched_expr -> unmatched_expr matched_op_expr : build_op('$1', '$2').
 unmatched_expr -> unmatched_expr unmatched_op_expr : build_op('$1', '$2').
-%% TODO: this rule should not be here as it allows [foo do end + foo 1, 2]
-%% while it should raise. But the parser raises ambiguity errors if we move
-%% it to no_parens_op_expr
-unmatched_expr -> unmatched_expr no_parens_op_expr : build_op('$1', '$2').
 unmatched_expr -> unary_op_eol expr : build_unary_op('$1', '$2').
 unmatched_expr -> at_op_eol expr : build_unary_op('$1', '$2').
 unmatched_expr -> capture_op_eol expr : build_unary_op('$1', '$2').
@@ -177,7 +174,9 @@ block_expr -> dot_identifier call_args_no_parens_all do_block : build_no_parens_
 matched_op_expr -> match_op_eol matched_expr : {'$1', '$2'}.
 matched_op_expr -> dual_op_eol matched_expr : {'$1', '$2'}.
 matched_op_expr -> mult_op_eol matched_expr : {'$1', '$2'}.
+matched_op_expr -> power_op_eol matched_expr : {'$1', '$2'}.
 matched_op_expr -> concat_op_eol matched_expr : {'$1', '$2'}.
+matched_op_expr -> range_op_eol matched_expr : {'$1', '$2'}.
 matched_op_expr -> ternary_op_eol matched_expr : {'$1', '$2'}.
 matched_op_expr -> xor_op_eol matched_expr : {'$1', '$2'}.
 matched_op_expr -> and_op_eol matched_expr : {'$1', '$2'}.
@@ -190,13 +189,14 @@ matched_op_expr -> pipe_op_eol matched_expr : {'$1', '$2'}.
 matched_op_expr -> comp_op_eol matched_expr : {'$1', '$2'}.
 matched_op_expr -> rel_op_eol matched_expr : {'$1', '$2'}.
 matched_op_expr -> arrow_op_eol matched_expr : {'$1', '$2'}.
-%% Warn for no parens subset
 matched_op_expr -> arrow_op_eol no_parens_one_expr : warn_pipe('$1', '$2'), {'$1', '$2'}.
 
 unmatched_op_expr -> match_op_eol unmatched_expr : {'$1', '$2'}.
 unmatched_op_expr -> dual_op_eol unmatched_expr : {'$1', '$2'}.
 unmatched_op_expr -> mult_op_eol unmatched_expr : {'$1', '$2'}.
+unmatched_op_expr -> power_op_eol unmatched_expr : {'$1', '$2'}.
 unmatched_op_expr -> concat_op_eol unmatched_expr : {'$1', '$2'}.
+unmatched_op_expr -> range_op_eol unmatched_expr : {'$1', '$2'}.
 unmatched_op_expr -> ternary_op_eol unmatched_expr : {'$1', '$2'}.
 unmatched_op_expr -> xor_op_eol unmatched_expr : {'$1', '$2'}.
 unmatched_op_expr -> and_op_eol unmatched_expr : {'$1', '$2'}.
@@ -213,7 +213,9 @@ unmatched_op_expr -> arrow_op_eol unmatched_expr : {'$1', '$2'}.
 no_parens_op_expr -> match_op_eol no_parens_expr : {'$1', '$2'}.
 no_parens_op_expr -> dual_op_eol no_parens_expr : {'$1', '$2'}.
 no_parens_op_expr -> mult_op_eol no_parens_expr : {'$1', '$2'}.
+no_parens_op_expr -> power_op_eol no_parens_expr : {'$1', '$2'}.
 no_parens_op_expr -> concat_op_eol no_parens_expr : {'$1', '$2'}.
+no_parens_op_expr -> range_op_eol no_parens_expr : {'$1', '$2'}.
 no_parens_op_expr -> ternary_op_eol no_parens_expr : {'$1', '$2'}.
 no_parens_op_expr -> xor_op_eol no_parens_expr : {'$1', '$2'}.
 no_parens_op_expr -> and_op_eol no_parens_expr : {'$1', '$2'}.
@@ -226,7 +228,6 @@ no_parens_op_expr -> pipe_op_eol no_parens_expr : {'$1', '$2'}.
 no_parens_op_expr -> comp_op_eol no_parens_expr : {'$1', '$2'}.
 no_parens_op_expr -> rel_op_eol no_parens_expr : {'$1', '$2'}.
 no_parens_op_expr -> arrow_op_eol no_parens_expr : {'$1', '$2'}.
-%% Warn for no parens subset
 no_parens_op_expr -> arrow_op_eol no_parens_one_ambig_expr : warn_pipe('$1', '$2'), {'$1', '$2'}.
 no_parens_op_expr -> arrow_op_eol no_parens_many_expr : warn_pipe('$1', '$2'), {'$1', '$2'}.
 
@@ -250,15 +251,17 @@ no_parens_zero_expr -> dot_identifier : build_no_parens('$1', nil).
 %% marks identifiers followed by brackets as bracket_identifier.
 access_expr -> bracket_at_expr : '$1'.
 access_expr -> bracket_expr : '$1'.
-access_expr -> capture_op_eol int : build_unary_op('$1', number_value('$2')).
+access_expr -> capture_int int : build_unary_op('$1', number_value('$2')).
 access_expr -> fn_eoe stab end_eoe : build_fn('$1', '$2', '$3').
-access_expr -> open_paren stab close_paren : build_stab('$1', '$2', '$3').
-access_expr -> open_paren stab ';' close_paren : build_stab('$1', '$2', '$4').
-access_expr -> open_paren ';' stab ';' close_paren : build_stab('$1', '$3', '$5').
-access_expr -> open_paren ';' stab close_paren : build_stab('$1', '$3', '$4').
-access_expr -> open_paren ';' close_paren : build_stab('$1', [], '$3').
+access_expr -> open_paren stab close_paren : build_paren_stab('$1', '$2', '$3').
+access_expr -> open_paren stab ';' close_paren : build_paren_stab('$1', '$2', '$4').
+access_expr -> open_paren ';' stab ';' close_paren : build_paren_stab('$1', '$3', '$5').
+access_expr -> open_paren ';' stab close_paren : build_paren_stab('$1', '$3', '$4').
+access_expr -> open_paren ';' close_paren : build_paren_stab('$1', [], '$3').
 access_expr -> empty_paren : warn_empty_paren('$1'), {'__block__', [], []}.
-access_expr -> number : '$1'.
+access_expr -> int : handle_number(number_value('$1'), '$1', ?exprs('$1')).
+access_expr -> flt : handle_number(number_value('$1'), '$1', ?exprs('$1')).
+access_expr -> char : handle_number(?exprs('$1'), '$1', number_value('$1')).
 access_expr -> list : element(1, '$1').
 access_expr -> map : '$1'.
 access_expr -> tuple : '$1'.
@@ -269,7 +272,7 @@ access_expr -> bin_string : build_bin_string('$1', delimiter(<<$">>)).
 access_expr -> list_string : build_list_string('$1', delimiter(<<$'>>)).
 access_expr -> bin_heredoc : build_bin_heredoc('$1').
 access_expr -> list_heredoc : build_list_heredoc('$1').
-access_expr -> bit_string : '$1'.
+access_expr -> bitstring : '$1'.
 access_expr -> sigil : build_sigil('$1').
 access_expr -> atom : handle_literal(?exprs('$1'), '$1').
 access_expr -> atom_quoted : handle_literal(?exprs('$1'), '$1', delimiter(<<$">>)).
@@ -277,10 +280,7 @@ access_expr -> atom_safe : build_quoted_atom('$1', true, delimiter(<<$">>)).
 access_expr -> atom_unsafe : build_quoted_atom('$1', false, delimiter(<<$">>)).
 access_expr -> dot_alias : '$1'.
 access_expr -> parens_call : '$1'.
-
-number -> int : handle_number(number_value('$1'), '$1', ?exprs('$1')).
-number -> flt : handle_number(number_value('$1'), '$1', ?exprs('$1')).
-number -> char : handle_number(?exprs('$1'), '$1', number_value('$1')).
+access_expr -> range_op : build_nullary_op('$1').
 
 %% Also used by maps and structs
 parens_call -> dot_call_identifier call_args_parens : build_parens('$1', '$2', {[], []}).
@@ -289,9 +289,10 @@ parens_call -> dot_call_identifier call_args_parens call_args_parens : build_nes
 bracket_arg -> open_bracket kw_data close_bracket : build_access_arg('$1', '$2', '$3').
 bracket_arg -> open_bracket container_expr close_bracket : build_access_arg('$1', '$2', '$3').
 bracket_arg -> open_bracket container_expr ',' close_bracket : build_access_arg('$1', '$2', '$4').
+bracket_arg -> open_bracket container_expr ',' container_args close_bracket : error_too_many_access_syntax('$3').
 
 bracket_expr -> dot_bracket_identifier bracket_arg : build_access(build_no_parens('$1', nil), '$2').
-bracket_expr -> access_expr bracket_arg : build_access('$1', '$2').
+bracket_expr -> access_expr bracket_arg : build_access('$1', meta_with_from_brackets('$2')).
 
 bracket_at_expr -> at_op_eol dot_bracket_identifier bracket_arg :
                      build_access(build_unary_op('$1', build_no_parens('$2', nil)), '$3').
@@ -331,8 +332,6 @@ stab -> stab eoe stab_expr : ['$3' | annotate_eoe('$2', '$1')].
 stab_eoe -> stab : '$1'.
 stab_eoe -> stab eoe : '$1'.
 
-%% Here, `element(1, Token)` is the stab operator,
-%% while `element(2, Token)` is the expression.
 stab_expr -> expr :
                '$1'.
 stab_expr -> stab_op_eol_and_expr :
@@ -389,6 +388,8 @@ unary_op_eol -> unary_op : '$1'.
 unary_op_eol -> unary_op eol : '$1'.
 unary_op_eol -> dual_op : '$1'.
 unary_op_eol -> dual_op eol : '$1'.
+unary_op_eol -> ternary_op : '$1'.
+unary_op_eol -> ternary_op eol : '$1'.
 
 capture_op_eol -> capture_op : '$1'.
 capture_op_eol -> capture_op eol : '$1'.
@@ -397,7 +398,7 @@ at_op_eol -> at_op : '$1'.
 at_op_eol -> at_op eol : '$1'.
 
 match_op_eol -> match_op : '$1'.
-match_op_eol -> match_op eol : '$1'.
+match_op_eol -> match_op eol : next_is_eol('$1', '$2').
 
 dual_op_eol -> dual_op : '$1'.
 dual_op_eol -> dual_op eol : next_is_eol('$1', '$2').
@@ -405,8 +406,14 @@ dual_op_eol -> dual_op eol : next_is_eol('$1', '$2').
 mult_op_eol -> mult_op : '$1'.
 mult_op_eol -> mult_op eol : next_is_eol('$1', '$2').
 
+power_op_eol -> power_op : '$1'.
+power_op_eol -> power_op eol : next_is_eol('$1', '$2').
+
 concat_op_eol -> concat_op : '$1'.
 concat_op_eol -> concat_op eol : next_is_eol('$1', '$2').
+
+range_op_eol -> range_op : '$1'.
+range_op_eol -> range_op eol : next_is_eol('$1', '$2').
 
 ternary_op_eol -> ternary_op : '$1'.
 ternary_op_eol -> ternary_op eol : next_is_eol('$1', '$2').
@@ -490,6 +497,9 @@ call_args_no_parens_all -> call_args_no_parens_many : '$1'.
 call_args_no_parens_one -> call_args_no_parens_kw : ['$1'].
 call_args_no_parens_one -> matched_expr : ['$1'].
 
+%% This is the only no parens ambiguity where we don't
+%% raise nor warn: "parent_call nested_call 1, 2, 3"
+%% always assumes that all arguments are nested.
 call_args_no_parens_ambig -> no_parens_expr : ['$1'].
 
 call_args_no_parens_many -> matched_expr ',' call_args_no_parens_kw : ['$1', '$3'].
@@ -514,7 +524,7 @@ container_args_base -> container_args_base ',' container_expr : ['$3' | '$1'].
 
 container_args -> container_args_base : reverse('$1').
 container_args -> container_args_base ',' : reverse('$1').
-container_args -> container_args_base ',' kw_call : reverse(['$3' | '$1']).
+container_args -> container_args_base ',' kw_data : reverse(['$3' | '$1']).
 
 % Function calls with parentheses
 
@@ -531,14 +541,10 @@ call_args_parens -> open_paren no_parens_expr close_paren :
                       {newlines_pair('$1', '$3'), ['$2']}.
 call_args_parens -> open_paren kw_call close_paren :
                       {newlines_pair('$1', '$3'), ['$2']}.
-call_args_parens -> open_paren kw_call ',' close_paren :
-                      warn_trailing_comma('$3'), {newlines_pair('$1', '$4'), ['$2']}.
 call_args_parens -> open_paren call_args_parens_base close_paren :
                       {newlines_pair('$1', '$3'), reverse('$2')}.
 call_args_parens -> open_paren call_args_parens_base ',' kw_call close_paren :
                       {newlines_pair('$1', '$5'), reverse(['$4' | '$2'])}.
-call_args_parens -> open_paren call_args_parens_base ',' kw_call ',' close_paren :
-                      warn_trailing_comma('$5'), {newlines_pair('$1', '$6'), reverse(['$4' | '$2'])}.
 
 % KV
 
@@ -553,19 +559,19 @@ kw_base -> kw_eol container_expr : [{'$1', '$2'}].
 kw_base -> kw_base ',' kw_eol container_expr : [{'$3', '$4'} | '$1'].
 
 kw_call -> kw_base : reverse('$1').
-kw_call -> kw_base ',' : reverse('$1').
-kw_call -> kw_base ',' matched_expr : error_bad_keyword_call_follow_up('$2').
+kw_call -> kw_base ',' : warn_trailing_comma('$2'), reverse('$1').
+kw_call -> kw_base ',' matched_expr : maybe_bad_keyword_call_follow_up('$2', '$1', '$3').
 
 kw_data -> kw_base : reverse('$1').
 kw_data -> kw_base ',' : reverse('$1').
-kw_data -> kw_base ',' matched_expr : error_bad_keyword_data_follow_up('$2').
+kw_data -> kw_base ',' matched_expr : maybe_bad_keyword_data_follow_up('$2', '$1', '$3').
 
 call_args_no_parens_kw_expr -> kw_eol matched_expr : {'$1', '$2'}.
-call_args_no_parens_kw_expr -> kw_eol no_parens_expr : {'$1', '$2'}.
+call_args_no_parens_kw_expr -> kw_eol no_parens_expr : warn_nested_no_parens_keyword('$1', '$2'), {'$1', '$2'}.
 
 call_args_no_parens_kw -> call_args_no_parens_kw_expr : ['$1'].
 call_args_no_parens_kw -> call_args_no_parens_kw_expr ',' call_args_no_parens_kw : ['$1' | '$3'].
-call_args_no_parens_kw -> call_args_no_parens_kw_expr ',' matched_expr : error_bad_keyword_call_follow_up('$2').
+call_args_no_parens_kw -> call_args_no_parens_kw_expr ',' matched_expr : maybe_bad_keyword_call_follow_up('$2', ['$1'], '$3').
 
 % Lists
 
@@ -580,12 +586,14 @@ list -> open_bracket list_args close_bracket : build_list('$1', '$2', '$3').
 % Tuple
 
 tuple -> open_curly '}' : build_tuple('$1', [], '$2').
+tuple -> open_curly kw_data '}' : bad_keyword('$1', tuple).
 tuple -> open_curly container_args close_curly :  build_tuple('$1', '$2', '$3').
 
 % Bitstrings
 
-bit_string -> open_bit '>>' : build_bit('$1', [], '$2').
-bit_string -> open_bit container_args close_bit : build_bit('$1', '$2', '$3').
+bitstring -> open_bit '>>' : build_bit('$1', [], '$2').
+bitstring -> open_bit kw_data '>>' : bad_keyword('$1', bitstring).
+bitstring -> open_bit container_args close_bit : build_bit('$1', '$2', '$3').
 
 % Map and structs
 
@@ -641,7 +649,6 @@ map -> struct_op struct_expr eol map_args : {'%', meta_from_token('$1'), ['$2', 
 
 Erlang code.
 
--define(file(), get(elixir_parser_file)).
 -define(columns(), get(elixir_parser_columns)).
 -define(token_metadata(), get(elixir_token_metadata)).
 
@@ -651,10 +658,7 @@ Erlang code.
 -define(meta(Node), element(2, Node)).
 -define(rearrange_uop(Op), (Op == 'not' orelse Op == '!')).
 
-%% The following directive is needed for (significantly) faster
-%% compilation of the generated .erl file by the HiPE compiler
--compile([{hipe, [{regalloc, linear_scan}]}]).
--compile({inline, meta_from_token/1, meta_from_location/1, line_from_location/1, is_eol/1}).
+-compile({inline, meta_from_token/1, meta_from_location/1, is_eol/1}).
 -import(lists, [reverse/1, reverse/2]).
 
 meta_from_token(Token) ->
@@ -665,8 +669,6 @@ meta_from_location({Line, Column, _}) ->
     true -> [{line, Line}, {column, Column}];
     false -> [{line, Line}]
   end.
-
-line_from_location({Line, _Column, _}) -> Line.
 
 do_end_meta(Do, End) ->
   case ?token_metadata() of
@@ -703,7 +705,7 @@ handle_literal(Literal, Token, ExtraMeta) ->
         {ok, EncodedLiteral} ->
           EncodedLiteral;
         {error, Reason} ->
-          return_error(Meta, elixir_utils:characters_to_list(Reason) ++ [": "], "literal")
+          return_error(?location(Token), elixir_utils:characters_to_list(Reason) ++ [": "], "literal")
       end
   end.
 
@@ -727,16 +729,14 @@ build_op(AST, {_Kind, Location, '//'}, Right) ->
       {'..//', Meta, [Left, Middle, Right]};
 
     _ ->
-      return_error(meta_from_location(Location), "the range step operator (//) must immediately follow the range definition operator (..), for example: 1..9//2. If you wanted to define a default argument, use (\\\\) instead. Syntax error before: ", "'//'")
+      return_error(Location, "the range step operator (//) must immediately follow the range definition operator (..), for example: 1..9//2. If you wanted to define a default argument, use (\\\\) instead. Syntax error before: ", "'//'")
   end;
 
-build_op({UOp, _, [Left]}, {_Kind, Location, 'in'}, Right) when ?rearrange_uop(UOp) ->
+build_op({UOp, _, [Left]}, {_Kind, {Line, Column, _} = Location, 'in'}, Right) when ?rearrange_uop(UOp) ->
   %% TODO: Remove "not left in right" rearrangement on v2.0
-  elixir_errors:erl_warn(line_from_location(Location), ?file(),
-    "\"not expr1 in expr2\" is deprecated. "
-    "Instead use \"expr1 not in expr2\" if you require Elixir v1.5+, "
-    "or \"not(expr1 in expr2)\" if you have to support earlier Elixir versions"),
-  {UOp, meta_from_location(Location), [{'in', meta_from_location(Location), [Left, Right]}]};
+  warn({Line, Column}, "\"not expr1 in expr2\" is deprecated, use \"expr1 not in expr2\" instead"),
+  Meta = meta_from_location(Location),
+  {UOp, Meta, [{'in', Meta, [Left, Right]}]};
 
 build_op(Left, {_Kind, Location, 'not in'}, Right) ->
   Meta = meta_from_location(Location),
@@ -745,8 +745,19 @@ build_op(Left, {_Kind, Location, 'not in'}, Right) ->
 build_op(Left, {_Kind, Location, Op}, Right) ->
   {Op, newlines_op(Location) ++ meta_from_location(Location), [Left, Right]}.
 
+build_unary_op({_Kind, {Line, Column, _}, '//'}, Expr) ->
+  {Outer, Inner} =
+    case ?columns() of
+      true -> {[{column, Column+1}], [{column, Column}]};
+      false -> {[], []}
+    end,
+  {'/', [{line, Line} | Outer], [{'/', [{line, Line} | Inner], nil}, Expr]};
+
 build_unary_op({_Kind, Location, Op}, Expr) ->
   {Op, meta_from_location(Location), [Expr]}.
+
+build_nullary_op({_Kind, Location, Op}) ->
+  {Op, meta_from_location(Location), []}.
 
 build_list(Left, Args, Right) ->
   {handle_literal(Args, Left, newlines_pair(Left, Right)), ?location(Left)}.
@@ -768,8 +779,6 @@ build_map_update(Left, {Pipe, Struct, Map}, Right, Extra) ->
 
 %% Blocks
 
-build_block([{Op, _, [_]}]=Exprs) when ?rearrange_uop(Op) ->
-  {'__block__', [], Exprs};
 build_block([{unquote_splicing, _, [_]}]=Exprs) ->
   {'__block__', [], Exprs};
 build_block([Expr]) ->
@@ -900,6 +909,11 @@ build_identifier({'.', Meta, _} = Dot, Args) ->
 build_identifier({op_identifier, Location, Identifier}, [Arg]) ->
   {Identifier, [{ambiguous_op, nil} | meta_from_location(Location)], [Arg]};
 
+%% TODO: Either remove ... or make it an operator on v2.0
+build_identifier({_, {Line, Column, _} = Location, '...'}, Args) when is_list(Args) ->
+  warn({Line, Column}, "... is no longer supported as a function call and it must receive no arguments"),
+  {'...', meta_from_location(Location), Args};
+
 build_identifier({_, Location, Identifier}, Args) ->
   {Identifier, meta_from_location(Location), Args}.
 
@@ -911,7 +925,7 @@ build_fn(Fn, Stab, End) ->
       Meta = newlines_op(?location(Fn)) ++ meta_from_token_with_closing(Fn, End),
       {fn, Meta, collect_stab(Stab, [], [])};
     block ->
-      return_error(meta_from_token(Fn), "expected anonymous functions to be defined with -> inside: ", "'fn'")
+      return_error(?location(Fn), "expected anonymous functions to be defined with -> inside: ", "'fn'")
   end.
 
 %% Access
@@ -928,7 +942,7 @@ build_sigil({sigil, Location, Sigil, Parts, Modifiers, Indentation, Delimiter}) 
   Meta = meta_from_location(Location),
   MetaWithDelimiter = [{delimiter, Delimiter} | Meta],
   MetaWithIndentation = meta_with_indentation(Meta, Indentation),
-  {list_to_atom("sigil_" ++ [Sigil]),
+  {list_to_atom("sigil_" ++ Sigil),
    MetaWithDelimiter,
    [{'<<>>', MetaWithIndentation, string_parts(Parts)}, Modifiers]}.
 
@@ -936,6 +950,9 @@ meta_with_indentation(Meta, nil) ->
   Meta;
 meta_with_indentation(Meta, Indentation) ->
   [{indentation, Indentation} | Meta].
+
+meta_with_from_brackets({List, Meta}) ->
+  {List, [{from_brackets, true} | Meta]}.
 
 build_bin_heredoc({bin_heredoc, Location, Indentation, Args}) ->
   ExtraMeta =
@@ -1044,7 +1061,9 @@ build_stab(Stab) ->
     stab -> collect_stab(Stab, [], [])
   end.
 
-build_stab(Before, Stab, After) ->
+build_paren_stab(_Before, [{Op, _, [_]}]=Exprs, _After) when ?rearrange_uop(Op) ->
+  {'__block__', [], Exprs};
+build_paren_stab(Before, Stab, After) ->
   case build_stab(Stab) of
     {'__block__', Meta, Block} ->
       {'__block__', Meta ++ meta_from_token_with_closing(Before, After), Block};
@@ -1084,29 +1103,44 @@ unwrap_when(Args) ->
 
 %% Warnings and errors
 
-return_error(Meta, Error, Token) ->
-  return_error(Meta, [Error, Token]).
+return_error({Line, Column, _}, ErrorMessage, ErrorToken) ->
+  return_error([{line, Line}, {column, Column}], [ErrorMessage, ErrorToken]).
+
+%% We should prefer to use return_error as it includes
+%% Line and Column but that's not always possible.
+return_error_with_meta(Meta, ErrorMessage, ErrorToken) ->
+  return_error(Meta, [ErrorMessage, ErrorToken]).
 
 error_invalid_stab(MetaStab) ->
-  return_error(MetaStab,
+  return_error_with_meta(MetaStab,
     "unexpected operator ->. If you want to define multiple clauses, the first expression must use ->. "
     "Syntax error before: ", "'->'").
 
 error_bad_atom(Token) ->
-  return_error(meta_from_token(Token), "atom cannot be followed by an alias. "
+  return_error(?location(Token), "atom cannot be followed by an alias. "
     "If the '.' was meant to be part of the atom's name, "
     "the atom name must be quoted. Syntax error before: ", "'.'").
 
-error_bad_keyword_call_follow_up(Token) ->
-  return_error(meta_from_token(Token),
+bad_keyword(Token, Context) ->
+  return_error(?location(Token),
+    "unexpected keyword list inside " ++ atom_to_list(Context) ++ ". "
+    "Did you mean to write a map (using %{...}) or a list (using [...]) instead? "
+    "Syntax error after: ", "'{'").
+
+maybe_bad_keyword_call_follow_up(_Token, KW, {'__cursor__', _, []} = Expr) ->
+  reverse([Expr | KW]);
+maybe_bad_keyword_call_follow_up(Token, _KW, _Expr) ->
+  return_error(?location(Token),
     "unexpected expression after keyword list. Keyword lists must always come as the last argument. Therefore, this is not allowed:\n\n"
     "    function_call(1, some: :option, 2)\n\n"
     "Instead, wrap the keyword in brackets:\n\n"
     "    function_call(1, [some: :option], 2)\n\n"
     "Syntax error after: ", "','").
 
-error_bad_keyword_data_follow_up(Token) ->
-  return_error(meta_from_token(Token),
+maybe_bad_keyword_data_follow_up(_Token, KW, {'__cursor__', _, []} = Expr) ->
+  reverse([Expr | KW]);
+maybe_bad_keyword_data_follow_up(Token, _KW, _Expr) ->
+  return_error(?location(Token),
     "unexpected expression after keyword list. Keyword lists must always come last in lists and maps. Therefore, this is not allowed:\n\n"
     "    [some: :value, :another]\n"
     "    %{some: :value, another => value}\n\n"
@@ -1116,53 +1150,62 @@ error_bad_keyword_data_follow_up(Token) ->
     "Syntax error after: ", "','").
 
 error_no_parens_strict(Token) ->
-  return_error(meta_from_token(Token), "unexpected parentheses. If you are making a "
+  return_error(?location(Token), "unexpected parentheses. If you are making a "
     "function call, do not insert spaces between the function name and the "
     "opening parentheses. Syntax error before: ", "'('").
 
 error_no_parens_many_strict(Node) ->
-  return_error(?meta(Node),
+  return_error_with_meta(?meta(Node),
     "unexpected comma. Parentheses are required to solve ambiguity in nested calls.\n\n"
     "This error happens when you have nested function calls without parentheses. "
     "For example:\n\n"
-    "    one a, two b, c, d\n\n"
+    "    parent_call a, nested_call b, c, d\n\n"
     "In the example above, we don't know if the parameters \"c\" and \"d\" apply "
-    "to the function \"one\" or \"two\". You can solve this by explicitly adding "
-    "parentheses:\n\n"
-    "    one a, two(b, c, d)\n\n"
+    "to the function \"parent_call\" or \"nested_call\". You can solve this by "
+    "explicitly adding parentheses:\n\n"
+    "    parent_call a, nested_call(b, c, d)\n\n"
     "Or by adding commas (in case a nested call is not intended):\n\n"
-    "    one, a, two, b, c, d\n\n"
+    "    parent_call a, nested_call, b, c, d\n\n"
     "Elixir cannot compile otherwise. Syntax error before: ", "','").
 
 error_no_parens_container_strict(Node) ->
-  return_error(?meta(Node),
+  return_error_with_meta(?meta(Node),
     "unexpected comma. Parentheses are required to solve ambiguity inside containers.\n\n"
     "This error may happen when you forget a comma in a list or other container:\n\n"
     "    [a, b c, d]\n\n"
     "Or when you have ambiguous calls:\n\n"
-    "    [one, two three, four, five]\n\n"
-    "In the example above, we don't know if the parameters \"four\" and \"five\" "
-    "belongs to the list or the function \"two\". You can solve this by explicitly "
+    "    [function a, b, c]\n\n"
+    "In the example above, we don't know if the values \"b\" and \"c\" "
+    "belongs to the list or the function \"function\". You can solve this by explicitly "
     "adding parentheses:\n\n"
-    "    [one, two(three, four), five]\n\n"
+    "    [one, function(a, b, c)]\n\n"
     "Elixir cannot compile otherwise. Syntax error before: ", "','").
 
-error_invalid_kw_identifier({_, _, do} = Token) ->
-  return_error(meta_from_token(Token), elixir_tokenizer:invalid_do_error("unexpected keyword: "), "do:");
-error_invalid_kw_identifier({_, _, KW} = Token) ->
-  return_error(meta_from_token(Token), "syntax error before: ", "'" ++ atom_to_list(KW) ++ ":'").
+error_too_many_access_syntax(Comma) ->
+  return_error(?location(Comma), "too many arguments when accessing a value. "
+    "The value[key] notation in Elixir expects either a single argument or a keyword list. "
+    "The following examples are allowed:\n\n"
+    "    value[one]\n"
+    "    value[one: 1, two: 2]\n"
+    "    value[[one, two, three]]\n\n"
+    "These are invalid:\n\n"
+    "    value[1, 2, 3]\n"
+    "    value[one, two, three]\n\n"
+    "Syntax error after: ", "','").
+
+error_invalid_kw_identifier({_, Location, do}) ->
+  return_error(Location, elixir_tokenizer:invalid_do_error("unexpected keyword: "), "do:");
+error_invalid_kw_identifier({_, Location, KW}) ->
+  return_error(Location, "syntax error before: ", "'" ++ atom_to_list(KW) ++ ":'").
 
 %% TODO: Make this an error on v2.0
-warn_empty_paren({_, {Line, _, _}}) ->
-  elixir_errors:erl_warn(Line, ?file(),
-    "invalid expression (). "
-    "If you want to invoke or define a function, make sure there are "
-    "no spaces between the function name and its arguments. If you wanted "
-    "to pass an empty block or code, pass a value instead, such as a nil or an atom").
+warn_trailing_comma({',', {Line, Column, _}}) ->
+  warn({Line, Column}, "trailing commas are not allowed inside function/macro call arguments").
 
 %% TODO: Make this an error on v2.0
-warn_pipe({arrow_op, {Line, _, _}, Op}, {_, [_ | _], [_ | _]}) ->
-  elixir_errors:erl_warn(Line, ?file(),
+warn_pipe({arrow_op, {Line, Column, _}, Op}, {_, [_ | _], [_ | _]}) ->
+  warn(
+    {Line, Column},
     io_lib:format(
       "parentheses are required when piping into a function call. For example:\n\n"
       "    foo 1 ~ts bar 2 ~ts baz 3\n\n"
@@ -1175,12 +1218,48 @@ warn_pipe({arrow_op, {Line, _, _}, Op}, {_, [_ | _], [_ | _]}) ->
 warn_pipe(_Token, _) ->
   ok.
 
-warn_trailing_comma({',', {Line, _, _}}) ->
-  elixir_errors:erl_warn(Line, ?file(),
-    "trailing commas are not allowed inside function/macro call arguments"
+%% TODO: Make this an error on v2.0
+warn_nested_no_parens_keyword(Key, Value) when is_atom(Key) ->
+  {line, Line} = lists:keyfind(line, 1, ?meta(Value)),
+  warn(
+    Line,
+    "missing parentheses for expression following \"" ++ atom_to_list(Key) ++ ":\" keyword. "
+    "Parentheses are required to solve ambiguity inside keywords.\n\n"
+    "This error happens when you have function calls without parentheses inside keywords. "
+    "For example:\n\n"
+    "    function(arg, one: nested_call a, b, c)\n"
+    "    function(arg, one: if expr, do: :this, else: :that)\n\n"
+    "In the examples above, we don't know if the arguments \"b\" and \"c\" apply "
+    "to the function \"function\" or \"nested_call\". Or if the keywords \"do\" and "
+    "\"else\" apply to the function \"function\" or \"if\". You can solve this by "
+    "explicitly adding parentheses:\n\n"
+    "    function(arg, one: if(expr, do: :this, else: :that))\n"
+    "    function(arg, one: nested_call(a, b, c))\n\n"
+    "Ambiguity found at:"
+  );
+
+% Key might not be an atom when using literal_encoder, we just skip the warning
+warn_nested_no_parens_keyword(_Key, _Value) ->
+  ok.
+
+warn_empty_paren({_, {Line, Column, _}}) ->
+  warn(
+    {Line, Column},
+    "invalid expression (). "
+    "If you want to invoke or define a function, make sure there are "
+    "no spaces between the function name and its arguments. If you wanted "
+    "to pass an empty block or code, pass a value instead, such as a nil or an atom"
   ).
 
-warn_empty_stab_clause({stab_op, {Line, _, _}, '->'}) ->
-  elixir_errors:erl_warn(Line, ?file(),
+warn_empty_stab_clause({stab_op, {Line, Column, _}, '->'}) ->
+  warn(
+    {Line, Column},
     "an expression is always required on the right side of ->. "
-    "Please provide a value after ->").
+    "Please provide a value after ->"
+  ).
+
+warn(LineColumn, Message) ->
+  case get(elixir_parser_warning_file) of
+    nil -> ok;
+    File -> elixir_errors:erl_warn(LineColumn, File, Message)
+  end.

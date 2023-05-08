@@ -119,6 +119,14 @@ defmodule Kernel.DocsTest do
 
           def two_good_names(first, :ok), do: first
           def two_good_names(second, :error), do: second
+
+          def really_long_signature(
+                really_long_var_named_one,
+                really_long_var_named_two,
+                really_long_var_named_three
+              ) do
+            {really_long_var_named_one, really_long_var_named_two, really_long_var_named_three}
+          end
         end
       )
 
@@ -128,6 +136,7 @@ defmodule Kernel.DocsTest do
       assert [
                arg_names,
                only_underscore,
+               really_long_signature,
                two_good_names,
                with_defaults,
                with_map_and_default,
@@ -140,6 +149,12 @@ defmodule Kernel.DocsTest do
 
       # only_underscore/1
       assert {{:only_underscore, 1}, ["only_underscore(_)"]} = only_underscore
+
+      # really_long_signature/3
+      assert {{:really_long_signature, 3},
+              [
+                "really_long_signature(really_long_var_named_one, really_long_var_named_two, really_long_var_named_three)"
+              ]} = really_long_signature
 
       # two_good_names/2
       assert {{:two_good_names, 2}, ["two_good_names(first, atom)"]} = two_good_names
@@ -254,7 +269,7 @@ defmodule Kernel.DocsTest do
       ] = Enum.sort(docs)
 
       assert {{:callback, :bar, 0}, _, [], :hidden, %{}} = callback_bar
-      assert {{:callback, :baz, 2}, _, [], %{}, %{}} = callback_baz
+      assert {{:callback, :baz, 2}, _, [], :none, %{}} = callback_baz
 
       assert {{:callback, :foo, 1}, _, [], %{"en" => "Callback doc"},
               %{since: "1.2.3", deprecated: "use baz/2 instead", color: :blue, stable: true}} =
@@ -266,7 +281,8 @@ defmodule Kernel.DocsTest do
       assert {{:function, :__struct__, 0}, _, ["%Kernel.DocsTest.SampleDocs{}"],
               %{"en" => "My struct"}, %{}} = function_struct_0
 
-      assert {{:function, :__struct__, 1}, _, ["__struct__(kv)"], :none, %{}} = function_struct_1
+      assert {{:function, :__struct__, 1}, _, ["__struct__(kv)"], :hidden, %{}} =
+               function_struct_1
 
       assert {{:function, :bar, 1}, _, ["bar(arg)"], %{"en" => "Multiple function head doc"},
               %{deprecated: "something else"}} = function_bar
@@ -362,7 +378,7 @@ defmodule Kernel.DocsTest do
              {{:bar, 0}, :hidden},
              {{:baz, 0}, %{"en" => "Baz docs"}},
              {{:foo, 1}, %{"en" => "Foo docs"}},
-             {{:fuz, 0}, %{}}
+             {{:fuz, 0}, :none}
            ] = Enum.sort(function_docs)
   end
 end

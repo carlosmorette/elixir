@@ -87,7 +87,11 @@ defmodule Module.Types.Pattern do
   @boolean {:union, [{:atom, true}, {:atom, false}]}
   @number {:union, [:integer, :float]}
   @unary_number_fun [{[:integer], :integer}, {[@number], :float}]
-  @binary_number_fun [{[:integer, :integer], :integer}, {[@number, @number], :float}]
+  @binary_number_fun [
+    {[:integer, :integer], :integer},
+    {[:float, @number], :float},
+    {[@number, :float], :float}
+  ]
 
   @guard_functions %{
     {:is_atom, 1} => [{[:atom], @boolean}],
@@ -164,7 +168,6 @@ defmodule Module.Types.Pattern do
     :is_bitstring,
     :is_boolean,
     :is_float,
-    :is_function,
     :is_function,
     :is_integer,
     :is_list,
@@ -261,7 +264,8 @@ defmodule Module.Types.Pattern do
     # should not affect the inference of x
     if not type_guard? or consider_type_guards? do
       stack = push_expr_stack(expr, stack)
-      param_unions = signature_to_param_unions(signature, context)
+      expected_clauses = filter_clauses(signature, expected, stack, context)
+      param_unions = signature_to_param_unions(expected_clauses, context)
       arg_stack = %{stack | type_guards: {false, keep_guarded?}}
       mfa = {:erlang, guard, length(args)}
 
@@ -270,7 +274,16 @@ defmodule Module.Types.Pattern do
                of_guard(arg, param, arg_stack, context)
              end),
            {:ok, return_type, context} <-
-             unify_call(arg_types, signature, expected, mfa, stack, context, type_guard?) do
+             unify_call(
+               arg_types,
+               expected_clauses,
+               expected,
+               mfa,
+               signature,
+               stack,
+               context,
+               type_guard?
+             ) do
         guard_sources = guard_sources(arg_types, type_guard?, keep_guarded?, context)
         {:ok, return_type, %{context | guard_sources: guard_sources}}
       end
@@ -353,6 +366,10 @@ defmodule Module.Types.Pattern do
   defp collect_var_indexes_from_expr(expr, context) do
     {_, vars} =
       Macro.prewalk(expr, %{}, fn
+        {:"::", _, [left, right]}, acc ->
+          # Do not mistake binary modifiers as variables
+          {collect_exprs_from_modifiers(right, [left]), acc}
+
         var, acc when is_var(var) ->
           var_name = var_name(var)
           %{^var_name => type} = context.vars
@@ -365,19 +382,31 @@ defmodule Module.Types.Pattern do
     Map.keys(vars)
   end
 
-  defp unify_call(args, clauses, _expected, _mfa, stack, context, true = _type_guard?) do
+  defp collect_exprs_from_modifiers({:-, _, [left, right]}, acc) do
+    collect_exprs_from_modifiers(left, collect_expr_from_modifier(right, acc))
+  end
+
+  defp collect_exprs_from_modifiers(modifier, acc) do
+    collect_expr_from_modifier(modifier, acc)
+  end
+
+  defp collect_expr_from_modifier({:unit, _, [arg]}, acc), do: [arg | acc]
+  defp collect_expr_from_modifier({:size, _, [arg]}, acc), do: [arg | acc]
+  defp collect_expr_from_modifier({var, _, ctx}, acc) when is_atom(var) and is_atom(ctx), do: acc
+
+  defp unify_call(args, clauses, _expected, _mfa, _signature, stack, context, true = _type_guard?) do
     unify_type_guard_call(args, clauses, stack, context)
   end
 
-  defp unify_call(args, clauses, expected, mfa, stack, context, false = _type_guard?) do
-    unify_call(args, clauses, expected, mfa, stack, context)
+  defp unify_call(args, clauses, expected, mfa, signature, stack, context, false = _type_guard?) do
+    unify_call(args, clauses, expected, mfa, signature, stack, context)
   end
 
-  defp unify_call([], [{[], return}], _expected, _mfa, _stack, context) do
+  defp unify_call([], [{[], return}], _expected, _mfa, _signature, _stack, context) do
     {:ok, return, context}
   end
 
-  defp unify_call(args, signature, expected, mfa, stack, context) do
+  defp unify_call(args, clauses, expected, mfa, signature, stack, context) do
     # Given the arguments:
     # foo | bar, {:ok, baz | bat}
 
@@ -390,16 +419,14 @@ defmodule Module.Types.Pattern do
     # bar, {:ok, baz}
     # bar, {:ok, bat}
 
-    expanded_args =
-      args
-      |> Enum.map(&flatten_union/1)
-      |> cartesian_product()
+    flatten_args = Enum.map(args, &flatten_union(&1, context))
+    cartesian_args = cartesian_product(flatten_args)
 
     # Remove clauses that do not match the expected type
     # Ignore type variables in parameters by changing them to dynamic
 
     clauses =
-      signature
+      clauses
       |> filter_clauses(expected, stack, context)
       |> Enum.map(fn {params, return} ->
         {Enum.map(params, &var_to_dynamic/1), return}
@@ -412,11 +439,11 @@ defmodule Module.Types.Pattern do
     # the type contexts from unifying argument and parameter to
     # infer type variables in arguments
     result =
-      flat_map_ok(expanded_args, fn expanded_args ->
+      flat_map_ok(cartesian_args, fn cartesian_args ->
         result =
           Enum.flat_map(clauses, fn {params, return} ->
             result =
-              map_ok(Enum.zip(expanded_args, params), fn {arg, param} ->
+              map_ok(Enum.zip(cartesian_args, params), fn {arg, param} ->
                 case unify(arg, param, stack, context) do
                   {:ok, _type, context} -> {:ok, context}
                   {:error, reason} -> {:error, reason}
@@ -440,7 +467,13 @@ defmodule Module.Types.Pattern do
       {:ok, returns_contexts} ->
         {success_returns, contexts} = Enum.unzip(returns_contexts)
         contexts = Enum.concat(contexts)
-        indexes = Enum.uniq(Enum.flat_map(args, &collect_var_indexes_from_type/1))
+
+        indexes =
+          for types <- flatten_args,
+              type <- types,
+              index <- collect_var_indexes_from_type(type),
+              do: index,
+              uniq: true
 
         # Build unions from collected type contexts to unify with
         # type variables from arguments
@@ -464,7 +497,7 @@ defmodule Module.Types.Pattern do
         end
 
       {:error, args} ->
-        error(:unable_apply, {mfa, args, signature, stack}, context)
+        error(:unable_apply, {mfa, args, expected, signature, stack}, context)
     end
   end
 
@@ -588,19 +621,21 @@ defmodule Module.Types.Pattern do
   defp keep_guarded(%{type_guards: {consider?, _}} = stack),
     do: %{stack | type_guards: {consider?, true}}
 
-  defp guard_signature(name, arity) do
-    Map.fetch!(@guard_functions, {name, arity})
-  end
-
   defp filter_clauses(signature, expected, stack, context) do
     Enum.filter(signature, fn {_params, return} ->
       match?({:ok, _type, _context}, unify(return, expected, stack, context))
     end)
   end
 
-  defp type_guard?(name) do
-    name in @type_guards
-  end
+  Enum.each(@guard_functions, fn {{name, arity}, signature} ->
+    defp guard_signature(unquote(name), unquote(arity)), do: unquote(Macro.escape(signature))
+  end)
+
+  Enum.each(@type_guards, fn name ->
+    defp type_guard?(unquote(name)), do: true
+  end)
+
+  defp type_guard?(name) when is_atom(name), do: false
 
   ## Shared
 

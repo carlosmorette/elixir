@@ -26,20 +26,13 @@ defmodule Version do
 
       "1.0.0-alpha.3+20130417140000.amd64"
 
-  ## Struct
-
-  The version is represented by the `Version` struct and fields
-  are named according to SemVer 2.0: `:major`, `:minor`, `:patch`,
-  `:pre`, and `:build`. You can read those fields but you should
-  not create a new `Version` directly via the struct syntax. Instead
-  use the functions in this module.
-
   ## Requirements
 
   Requirements allow you to specify which versions of a given
   dependency you are willing to work against. Requirements support the common
-  comparison operators such as `>`, `>=`, `<`, `<=`, `==`, `!=` that work as one would expect,
-  and additionally the special operator `~>` described in detail further below.
+  comparison operators such as `>`, `>=`, `<`, `<=`, and `==` that work as one
+  would expect, and additionally the special operator `~>` described in detail
+  further below.
 
       # Only version 2.0.0
       "== 2.0.0"
@@ -98,8 +91,19 @@ defmodule Version do
 
   import Kernel, except: [match?: 2]
 
+  @doc """
+  The Version struct.
+
+  It contains the fields `:major`, `:minor`, `:patch`, `:pre`, and
+  `:build` according to SemVer 2.0, where `:pre` is a list.
+
+  You can read those fields but you should not create a new `Version`
+  directly via the struct syntax. Instead use the functions in this
+  module.
+  """
   @enforce_keys [:major, :minor, :patch]
-  defstruct [:major, :minor, :patch, :build, pre: []]
+  @derive {Inspect, optional: [:pre, :build]}
+  defstruct [:major, :minor, :patch, pre: [], build: nil]
 
   @type version :: String.t() | t
   @type requirement :: String.t() | Version.Requirement.t()
@@ -133,28 +137,31 @@ defmodule Version do
     @compile inline: [compare: 2]
 
     @doc false
-    @spec new(String.t(), :ets.match_spec()) :: t
+    @spec new(String.t(), [atom | matchable]) :: t
     def new(source, lexed) do
       %__MODULE__{source: source, lexed: lexed}
     end
 
     @doc false
+    @spec compile_requirement(t) :: t
+    def compile_requirement(%Requirement{} = requirement) do
+      requirement
+    end
+
+    @doc false
     @spec match?(t, tuple) :: boolean
-    def match?(%__MODULE__{lexed: lexed}, matchable_pattern) do
-      match_lexed?(lexed, matchable_pattern)
+    def match?(%__MODULE__{lexed: [operator, req | rest]}, version) do
+      match_lexed?(rest, version, match_op?(operator, req, version))
     end
 
-    defp match_lexed?([operator, req, :&& | rest], version) do
-      match_op?(operator, req, version) and match_lexed?(rest, version)
-    end
+    defp match_lexed?([:and, operator, req | rest], version, acc),
+      do: match_lexed?(rest, version, acc and match_op?(operator, req, version))
 
-    defp match_lexed?([operator, req, :|| | rest], version) do
-      match_op?(operator, req, version) or match_lexed?(rest, version)
-    end
+    defp match_lexed?([:or, operator, req | rest], version, acc),
+      do: acc or match_lexed?(rest, version, match_op?(operator, req, version))
 
-    defp match_lexed?([operator, req], version) do
-      match_op?(operator, req, version)
-    end
+    defp match_lexed?([], _version, acc),
+      do: acc
 
     defp match_op?(:==, req, version) do
       compare(version, req) == :eq
@@ -349,9 +356,8 @@ defmodule Version do
 
   ## Examples
 
-      iex> {:ok, version} = Version.parse("2.0.1-alpha1")
-      iex> version
-      #Version<2.0.1-alpha1>
+      iex> Version.parse("2.0.1-alpha1")
+      {:ok, %Version{major: 2, minor: 0, patch: 1, pre: ["alpha1"]}}
 
       iex> Version.parse("2.0-alpha1")
       :error
@@ -361,7 +367,7 @@ defmodule Version do
   def parse(string) when is_binary(string) do
     case Version.Parser.parse_version(string) do
       {:ok, {major, minor, patch, pre, build_parts}} ->
-        build = if build_parts == [], do: nil, else: Enum.join(build_parts, "")
+        build = if build_parts == [], do: nil, else: Enum.join(build_parts, ".")
         version = %Version{major: major, minor: minor, patch: patch, pre: pre, build: build}
         {:ok, version}
 
@@ -378,7 +384,7 @@ defmodule Version do
   ## Examples
 
       iex> Version.parse!("2.0.1-alpha1")
-      #Version<2.0.1-alpha1>
+      %Version{major: 2, minor: 0, patch: 1, pre: ["alpha1"]}
 
       iex> Version.parse!("2.0-alpha1")
       ** (Version.InvalidVersionError) invalid version: "2.0-alpha1"
@@ -399,7 +405,7 @@ defmodule Version do
 
       iex> {:ok, requirement} = Version.parse_requirement("== 2.0.1")
       iex> requirement
-      #Version.Requirement<== 2.0.1>
+      Version.parse_requirement!("== 2.0.1")
 
       iex> Version.parse_requirement("== == 2.0.1")
       :error
@@ -418,10 +424,10 @@ defmodule Version do
 
   If `string` is an invalid requirement, a `Version.InvalidRequirementError` is raised.
 
-  ## Examples
+  # Examples
 
       iex> Version.parse_requirement!("== 2.0.1")
-      #Version.Requirement<== 2.0.1>
+      Version.parse_requirement!("== 2.0.1")
 
       iex> Version.parse_requirement!("== == 2.0.1")
       ** (Version.InvalidRequirementError) invalid requirement: "== == 2.0.1"
@@ -442,9 +448,7 @@ defmodule Version do
   The internal representation is opaque.
   """
   @spec compile_requirement(Requirement.t()) :: Requirement.t()
-  def compile_requirement(requirement) do
-    requirement
-  end
+  defdelegate compile_requirement(requirement), to: Requirement
 
   defp to_matchable(%Version{major: major, minor: minor, patch: patch, pre: pre}, allow_pre?) do
     {major, minor, patch, pre, allow_pre?}
@@ -460,6 +464,36 @@ defmodule Version do
     end
   end
 
+  @doc """
+  Converts the given version to a string.
+
+  ### Examples
+
+      iex> Version.to_string(%Version{major: 1, minor: 2, patch: 3})
+      "1.2.3"
+      iex> Version.to_string(Version.parse!("1.14.0-rc.0+build0"))
+      "1.14.0-rc.0+build0"
+  """
+  @doc since: "1.14.0"
+  @spec to_string(Version.t()) :: String.t()
+  def to_string(%Version{} = version) do
+    pre = pre_to_string(version.pre)
+    build = if build = version.build, do: "+#{build}"
+    "#{version.major}.#{version.minor}.#{version.patch}#{pre}#{build}"
+  end
+
+  defp pre_to_string([]) do
+    ""
+  end
+
+  defp pre_to_string(pre) do
+    "-" <>
+      Enum.map_join(pre, ".", fn
+        int when is_integer(int) -> Integer.to_string(int)
+        string when is_binary(string) -> string
+      end)
+  end
+
   defmodule Parser do
     @moduledoc false
 
@@ -470,64 +504,77 @@ defmodule Version do
       {">", :>},
       {"<", :<},
       {"==", :==},
-      {"!=", :!=},
-      {"!", :!=},
-      {" or ", :||},
-      {" and ", :&&}
+      {" or ", :or},
+      {" and ", :and}
     ]
 
+    def lexer(string) do
+      lexer(string, "", [])
+    end
+
     for {string_op, atom_op} <- operators do
-      def lexer(unquote(string_op) <> rest, acc) do
-        lexer(rest, [unquote(atom_op) | acc])
+      defp lexer(unquote(string_op) <> rest, buffer, acc) do
+        lexer(rest, "", [unquote(atom_op) | maybe_prepend_buffer(buffer, acc)])
       end
     end
 
-    def lexer(" " <> rest, acc) do
-      lexer(rest, acc)
+    defp lexer("!=" <> rest, buffer, acc) do
+      IO.warn("!= inside Version requirements is deprecated, use ~> or >= instead")
+      lexer(rest, "", [:!= | maybe_prepend_buffer(buffer, acc)])
     end
 
-    def lexer(<<char::utf8, rest::binary>>, []) do
-      lexer(rest, [<<char::utf8>>, :==])
+    defp lexer("!" <> rest, buffer, acc) do
+      IO.warn("! inside Version requirements is deprecated, use ~> or >= instead")
+      lexer(rest, "", [:!= | maybe_prepend_buffer(buffer, acc)])
     end
 
-    def lexer(<<char::utf8, body::binary>>, [head | acc]) do
-      acc =
-        case head do
-          head when is_binary(head) ->
-            [<<head::binary, char::utf8>> | acc]
-
-          head when head in [:||, :&&] ->
-            [<<char::utf8>>, :==, head | acc]
-
-          _other ->
-            [<<char::utf8>>, head | acc]
-        end
-
-      lexer(body, acc)
+    defp lexer(" " <> rest, buffer, acc) do
+      lexer(rest, "", maybe_prepend_buffer(buffer, acc))
     end
 
-    def lexer("", acc) do
-      Enum.map(Enum.reverse(acc), fn
-        op when is_atom(op) ->
-          op
+    defp lexer(<<char::utf8, rest::binary>>, buffer, acc) do
+      lexer(rest, <<buffer::binary, char::utf8>>, acc)
+    end
 
-        version when is_binary(version) ->
-          case Version.Parser.parse_version(version, true) do
-            {:ok, version} -> version
-            :error -> :error
-          end
-      end)
+    defp lexer(<<>>, buffer, acc) do
+      maybe_prepend_buffer(buffer, acc)
+    end
+
+    defp maybe_prepend_buffer("", acc), do: acc
+
+    defp maybe_prepend_buffer(buffer, [head | _] = acc)
+         when is_atom(head) and head not in [:and, :or],
+         do: [buffer | acc]
+
+    defp maybe_prepend_buffer(buffer, acc),
+      do: [buffer, :== | acc]
+
+    defp revert_lexed([version, op, cond | rest], acc)
+         when is_binary(version) and is_atom(op) and cond in [:or, :and] do
+      with {:ok, version} <- validate_requirement(op, version) do
+        revert_lexed(rest, [cond, op, version | acc])
+      end
+    end
+
+    defp revert_lexed([version, op], acc) when is_binary(version) and is_atom(op) do
+      with {:ok, version} <- validate_requirement(op, version) do
+        {:ok, [op, version | acc]}
+      end
+    end
+
+    defp revert_lexed(_rest, _acc), do: :error
+
+    defp validate_requirement(op, version) do
+      case parse_version(version, true) do
+        {:ok, version} when op == :~> -> {:ok, version}
+        {:ok, {_, _, patch, _, _} = version} when is_integer(patch) -> {:ok, version}
+        _ -> :error
+      end
     end
 
     @spec parse_requirement(String.t()) :: {:ok, term} | :error
     def parse_requirement(source) do
-      lexed = lexer(source, [])
-
-      if valid_requirement?(lexed) do
-        {:ok, lexed}
-      else
-        :error
-      end
+      revert_lexed(lexer(source), [])
     end
 
     def parse_version(string, approximate? \\ false) when is_binary(string) do
@@ -612,71 +659,11 @@ defmodule Version do
     defp valid_identifier?(_other) do
       false
     end
-
-    defp valid_requirement?([]), do: false
-    defp valid_requirement?([a | next]), do: valid_requirement?(a, next)
-
-    # it must finish with a version
-    defp valid_requirement?(a, []) when is_tuple(a) do
-      true
-    end
-
-    # or <op> | and <op>
-    defp valid_requirement?(a, [b | next]) when is_atom(a) and is_atom(b) and a in [:||, :&&] do
-      valid_requirement?(b, next)
-    end
-
-    # <version> or | <version> and
-    defp valid_requirement?(a, [b | next]) when is_tuple(a) and is_atom(b) and b in [:||, :&&] do
-      valid_requirement?(b, next)
-    end
-
-    # or <version> | and <version>
-    defp valid_requirement?(a, [b | next]) when is_atom(a) and is_tuple(b) and a in [:||, :&&] do
-      valid_requirement?(b, next)
-    end
-
-    # ~> <version>
-    defp valid_requirement?(:~>, [b | next]) when is_tuple(b) do
-      valid_requirement?(b, next)
-    end
-
-    # <op> <version>
-    defp valid_requirement?(a, [{_major, _minor, patch, _pre, _build} = b | next])
-         when is_atom(a) and is_integer(patch) do
-      valid_requirement?(b, next)
-    end
-
-    defp valid_requirement?(_, _) do
-      false
-    end
   end
 end
 
 defimpl String.Chars, for: Version do
-  def to_string(version) do
-    pre = pre(version.pre)
-    build = if build = version.build, do: "+#{build}"
-    "#{version.major}.#{version.minor}.#{version.patch}#{pre}#{build}"
-  end
-
-  defp pre([]) do
-    ""
-  end
-
-  defp pre(pre) do
-    "-" <>
-      Enum.map_join(pre, ".", fn
-        int when is_integer(int) -> Integer.to_string(int)
-        string when is_binary(string) -> string
-      end)
-  end
-end
-
-defimpl Inspect, for: Version do
-  def inspect(self, _opts) do
-    "#Version<" <> to_string(self) <> ">"
-  end
+  defdelegate to_string(version), to: Version
 end
 
 defimpl String.Chars, for: Version.Requirement do
@@ -686,7 +673,9 @@ defimpl String.Chars, for: Version.Requirement do
 end
 
 defimpl Inspect, for: Version.Requirement do
-  def inspect(%Version.Requirement{source: source}, _opts) do
-    "#Version.Requirement<" <> source <> ">"
+  def inspect(%Version.Requirement{source: source}, opts) do
+    colorized = Inspect.Algebra.color("\"" <> source <> "\"", :string, opts)
+
+    Inspect.Algebra.concat(["Version.parse_requirement!(", colorized, ")"])
   end
 end

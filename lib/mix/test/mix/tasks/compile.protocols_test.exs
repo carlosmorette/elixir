@@ -6,9 +6,9 @@ defmodule Mix.Tasks.Compile.ProtocolsTest do
   @old {{2010, 1, 1}, {0, 0, 0}}
 
   test "compiles and consolidates local protocols", context do
-    Mix.Project.push(MixTest.Case.Sample)
-
     in_tmp(context.test, fn ->
+      Mix.Project.push(MixTest.Case.Sample)
+
       File.mkdir_p!("lib")
       assert Mix.Task.run("compile")
 
@@ -49,9 +49,9 @@ defmodule Mix.Tasks.Compile.ProtocolsTest do
   end
 
   test "compiles after converting a protocol into a standard module", context do
-    Mix.Project.push(MixTest.Case.Sample)
-
     in_tmp(context.test, fn ->
+      Mix.Project.push(MixTest.Case.Sample)
+
       File.mkdir_p!("lib")
       Mix.Task.run("compile")
       purge_protocol(Compile.Protocol)
@@ -87,9 +87,9 @@ defmodule Mix.Tasks.Compile.ProtocolsTest do
   end
 
   test "compiles and consolidates deps protocols", context do
-    Mix.Project.push(MixTest.Case.Sample)
-
     in_tmp(context.test, fn ->
+      Mix.Project.push(MixTest.Case.Sample)
+
       File.mkdir_p!("lib")
       Mix.Task.run("compile")
       purge_protocol(String.Chars)
@@ -119,13 +119,12 @@ defmodule Mix.Tasks.Compile.ProtocolsTest do
   end
 
   test "consolidated protocols keep relative path to their source" do
-    Mix.Project.push(MixTest.Case.Sample)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(MixTest.Case.Sample)
       compile_elixir_and_protocols()
 
       # Load consolidated
-      :code.add_patha('_build/dev/lib/sample/consolidated')
+      :code.add_patha(~c"_build/dev/lib/sample/consolidated")
       :code.purge(Enumerable)
       :code.delete(Enumerable)
 
@@ -133,7 +132,7 @@ defmodule Mix.Tasks.Compile.ProtocolsTest do
         Enumerable.impl_for!(:oops)
       rescue
         Protocol.UndefinedError ->
-          assert [{_, _, _, [file: 'lib/enum.ex'] ++ _} | _] = __STACKTRACE__
+          assert [{_, _, _, [file: ~c"lib/enum.ex"] ++ _} | _] = __STACKTRACE__
       else
         _ ->
           flunk("Enumerable.impl_for!/1 should have failed")
@@ -159,7 +158,7 @@ defmodule Mix.Tasks.Compile.ProtocolsTest do
   end
 
   defp purge_protocol(module) do
-    :code.del_path(:filename.absname('_build/dev/lib/sample/consolidated'))
+    :code.del_path(:filename.absname(~c"_build/dev/lib/sample/consolidated"))
     :code.purge(module)
     :code.delete(module)
   end

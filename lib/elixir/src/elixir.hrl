@@ -1,13 +1,14 @@
 -define(key(M, K), maps:get(K, M)).
--define(ann(Opts), elixir_erl:get_ann(Opts)).
--define(line(Opts), elixir_utils:get_line(Opts)).
--define(generated(Meta), [{generated, true} | Meta]).
+-define(ann(Meta), elixir_erl:get_ann(Meta)).
+-define(line(Meta), elixir_utils:get_line(Meta)).
+-define(generated(Meta), elixir_utils:generated(Meta)).
 -define(var_context, ?MODULE).
 -define(remote(Ann, Module, Function, Args), {call, Ann, {remote, Ann, {atom, Ann, Module}, {atom, Ann, Function}}, Args}).
 
 -record(elixir_ex, {
   caller=false,            %% stores if __CALLER__ is allowed
-  prematch=warn,           %% {Read, Counter} | warn | raise | pin
+  %% TODO: Remove warn and everywhere it is set in v2.0
+  prematch=warn,           %% {Read, Counter} | warn | raise | pin | {bitsize,PreVars,OriginalVars}
   stacktrace=false,        %% stores if __STACKTRACE__ is allowed
   unused={#{}, 0},         %% a map of unused vars and a version counter for vars
   vars={#{}, false}        %% a tuple with maps of read and optional write current vars
@@ -25,14 +26,14 @@
 }).
 
 -record(elixir_tokenizer, {
-  file=(<<"nofile">>),
   terminators=[],
   unescape=true,
-  check_terminators=true,
+  cursor_completion=false,
   existing_atoms_only=false,
   static_atoms_encoder=nil,
   preserve_comments=nil,
   identifier_tokenizer=elixir_tokenizer,
+  ascii_identifiers_only=true,
   indentation=0,
   mismatch_hints=[],
   warn_on_unnecessary_quotes=true,

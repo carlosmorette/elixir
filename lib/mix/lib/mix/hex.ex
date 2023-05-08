@@ -2,28 +2,29 @@ defmodule Mix.Hex do
   @moduledoc false
   @compile {:no_warn_undefined, Hex}
   @hex_requirement ">= 0.19.0"
-  @hex_mirror "https://repo.hex.pm"
+  @hex_builds_url "https://builds.hex.pm"
 
   @doc """
-  Returns `true` if `Hex` is loaded or installed. Otherwise returns `false`.
+  Returns `true` if `Hex` is loaded or installed.
+
+  Otherwise returns `false`.
   """
-  @spec ensure_installed?(atom) :: boolean
-  def ensure_installed?(app) do
-    if Code.ensure_loaded?(Hex) do
-      true
-    else
-      shell = Mix.shell()
-      shell.info("Could not find Hex, which is needed to build dependency #{inspect(app)}")
-
-      confirm_message =
-        "Shall I install Hex? (if running non-interactively, use \"mix local.hex --force\")"
-
-      if shell.yes?(confirm_message) do
-        Mix.Tasks.Local.Hex.run(["--force"])
-      else
-        false
-      end
+  @spec ensure_installed?(boolean) :: boolean
+  def ensure_installed?(force?) do
+    cond do
+      Code.ensure_loaded?(Hex) -> true
+      force? or install_hex?() -> Mix.Tasks.Local.Hex.run(["--force"])
+      true -> false
     end
+  end
+
+  defp install_hex? do
+    shell = Mix.shell()
+    shell.info("Mix requires the Hex package manager to fetch dependencies")
+
+    shell.yes?(
+      "Shall I install Hex? (if running non-interactively, use \"mix local.hex --force\")"
+    )
   end
 
   @doc """
@@ -69,9 +70,9 @@ defmodule Mix.Hex do
   end
 
   @doc """
-  Returns the URL to the Hex mirror.
+  Returns the URL to the Hex build assets.
   """
-  def mirror do
-    System.get_env("HEX_MIRROR") || @hex_mirror
+  def url do
+    System.get_env("HEX_BUILDS_URL") || System.get_env("HEX_MIRROR") || @hex_builds_url
   end
 end

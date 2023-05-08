@@ -6,6 +6,8 @@ defmodule ApplicationTest do
   import PathHelpers
   import ExUnit.CaptureIO
 
+  @app :elixir
+
   test "application environment" do
     assert_raise ArgumentError, ~r/because the application was not loaded nor configured/, fn ->
       Application.fetch_env!(:unknown, :unknown)
@@ -75,12 +77,14 @@ defmodule ApplicationTest do
 
       assert Application.put_env(:elixir, :unknown, nested: [key: :value]) == :ok
 
+      assert compile_env(@app, :unknown, :default) == [nested: [key: :value]]
       assert compile_env(:elixir, :unknown, :default) == [nested: [key: :value]]
       assert_received {:compile_env, :elixir, [:unknown], {:ok, [nested: [key: :value]]}}
 
       assert compile_env(:elixir, :unknown) == [nested: [key: :value]]
       assert_received {:compile_env, :elixir, [:unknown], {:ok, [nested: [key: :value]]}}
 
+      assert compile_env!(@app, :unknown) == [nested: [key: :value]]
       assert compile_env!(:elixir, :unknown) == [nested: [key: :value]]
       assert_received {:compile_env, :elixir, [:unknown], {:ok, [nested: [key: :value]]}}
 
@@ -99,8 +103,8 @@ defmodule ApplicationTest do
       assert compile_env(:elixir, [:unknown, :unknown, :key], :default) == :default
       assert_received {:compile_env, :elixir, [:unknown, :unknown, :key], :error}
 
-      assert compile_env(:elixir, [:unknown, :nested, :unkown], :default) == :default
-      assert_received {:compile_env, :elixir, [:unknown, :nested, :unkown], :error}
+      assert compile_env(:elixir, [:unknown, :nested, :unknown], :default) == :default
+      assert_received {:compile_env, :elixir, [:unknown, :nested, :unknown], :error}
     after
       Application.delete_env(:elixir, :unknown)
     end
@@ -113,13 +117,23 @@ defmodule ApplicationTest do
     def trace(_, _), do: :ok
 
     defp compile_env(app, key, default \\ nil) do
-      code = quote do: Application.compile_env(unquote(app), unquote(key), unquote(default))
+      code =
+        quote do
+          require Application
+          Application.compile_env(unquote(app), unquote(key), unquote(default))
+        end
+
       {result, _binding} = Code.eval_quoted(code, [], tracers: [__MODULE__])
       result
     end
 
     defp compile_env!(app, key) do
-      code = quote do: Application.compile_env!(unquote(app), unquote(key))
+      code =
+        quote do
+          require Application
+          Application.compile_env!(unquote(app), unquote(key))
+        end
+
       {result, _binding} = Code.eval_quoted(code, [], tracers: [__MODULE__])
       result
     end
@@ -128,15 +142,15 @@ defmodule ApplicationTest do
   test "loaded and started applications" do
     started = Application.started_applications()
     assert is_list(started)
-    assert {:elixir, 'elixir', _} = List.keyfind(started, :elixir, 0)
+    assert {:elixir, ~c"elixir", _} = List.keyfind(started, :elixir, 0)
 
     started_timeout = Application.started_applications(7000)
     assert is_list(started_timeout)
-    assert {:elixir, 'elixir', _} = List.keyfind(started_timeout, :elixir, 0)
+    assert {:elixir, ~c"elixir", _} = List.keyfind(started_timeout, :elixir, 0)
 
     loaded = Application.loaded_applications()
     assert is_list(loaded)
-    assert {:elixir, 'elixir', _} = List.keyfind(loaded, :elixir, 0)
+    assert {:elixir, ~c"elixir", _} = List.keyfind(loaded, :elixir, 0)
   end
 
   test "application specification" do
@@ -144,7 +158,7 @@ defmodule ApplicationTest do
     assert Application.spec(:unknown) == nil
     assert Application.spec(:unknown, :description) == nil
 
-    assert Application.spec(:elixir, :description) == 'elixir'
+    assert Application.spec(:elixir, :description) == ~c"elixir"
     assert_raise FunctionClauseError, fn -> Application.spec(:elixir, :unknown) end
   end
 

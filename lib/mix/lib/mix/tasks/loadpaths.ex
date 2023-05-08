@@ -20,17 +20,14 @@ defmodule Mix.Tasks.Loadpaths do
     * `--no-archives-check` - does not check archives
     * `--no-compile` - does not compile dependencies, only check and load them
     * `--no-deps-check` - does not check dependencies, only load available ones
+    * `--no-deps-loading` - does not add deps loadpaths to the code path
     * `--no-elixir-version-check` - does not check Elixir version
-    * `--no-load-deps` - does not add deps loadpaths to the code path
+    * `--no-optional-deps` - does not compile or load optional deps
 
   """
   @impl true
   def run(args) do
     config = Mix.Project.config()
-
-    unless "--no-archives-check" in args do
-      Mix.Task.run("archive.check", args)
-    end
 
     # --from-mix-deps-compile is used only internally to avoid
     # recursively checking and loading dependencies that have
@@ -61,6 +58,7 @@ defmodule Mix.Tasks.Loadpaths do
       _ -> :ok
     end
 
+    # We don't cache the current application as we may still write to it
     Code.prepend_path(Mix.Project.compile_path(config))
   end
 

@@ -131,6 +131,8 @@ defmodule Calendar.ISO do
   unix_end = 315_569_519_999_999_999 - @unix_epoch * 1_000_000
   @unix_range_microseconds unix_start..unix_end
 
+  defguardp is_format(term) when term in [:basic, :extended]
+
   @typedoc """
   "Before the Current Era" or "Before the Common Era" (BCE), for those years less than `1`.
   """
@@ -156,6 +158,8 @@ defmodule Calendar.ISO do
   @type minute :: 0..59
   @type second :: 0..59
   @type weekday :: :monday | :tuesday | :wednesday | :thursday | :friday | :saturday | :sunday
+  @type utc_offset :: integer
+  @type format :: :basic | :extended
 
   @typedoc """
   Microseconds with stored precision.
@@ -244,6 +248,31 @@ defmodule Calendar.ISO do
   defguardp is_std_offset(offset) when is_integer(offset)
 
   @doc """
+  Converts a `t:System.time_unit/0` to precision.
+
+  Integer-based time units always get maximum precision.
+
+  ## Examples
+
+      iex> Calendar.ISO.time_unit_to_precision(:nanosecond)
+      6
+
+      iex> Calendar.ISO.time_unit_to_precision(:second)
+      0
+
+      iex> Calendar.ISO.time_unit_to_precision(1)
+      6
+
+  """
+  @doc since: "1.15.0"
+  @spec time_unit_to_precision(System.time_unit()) :: 0..6
+  def time_unit_to_precision(:nanosecond), do: 6
+  def time_unit_to_precision(:microsecond), do: 6
+  def time_unit_to_precision(:millisecond), do: 3
+  def time_unit_to_precision(:second), do: 0
+  def time_unit_to_precision(int) when is_integer(int), do: 6
+
+  @doc """
   Parses a time `string` in the `:extended` format.
 
   For more information on supported strings, see how this
@@ -262,6 +291,9 @@ defmodule Calendar.ISO do
   """
   @doc since: "1.10.0"
   @impl true
+  @spec parse_time(String.t()) ::
+          {:ok, {hour, minute, second, microsecond}}
+          | {:error, atom}
   def parse_time(string) when is_binary(string),
     do: parse_time(string, :extended)
 
@@ -282,11 +314,15 @@ defmodule Calendar.ISO do
 
   """
   @doc since: "1.12.0"
-  def parse_time("T" <> string, format) when is_binary(string),
-    do: do_parse_time(string, format)
-
-  def parse_time(string, format) when is_binary(string),
-    do: do_parse_time(string, format)
+  @spec parse_time(String.t(), format) ::
+          {:ok, {hour, minute, second, microsecond}}
+          | {:error, atom}
+  def parse_time(string, format) when is_binary(string) and is_format(format) do
+    case string do
+      "T" <> rest -> do_parse_time(rest, format)
+      _ -> do_parse_time(string, format)
+    end
+  end
 
   defp do_parse_time(<<unquote(match_basic_time), rest::binary>>, :basic)
        when unquote(guard_time) do
@@ -336,6 +372,9 @@ defmodule Calendar.ISO do
   """
   @doc since: "1.10.0"
   @impl true
+  @spec parse_date(String.t()) ::
+          {:ok, {year, month, day}}
+          | {:error, atom}
   def parse_date(string) when is_binary(string),
     do: parse_date(string, :extended)
 
@@ -356,13 +395,19 @@ defmodule Calendar.ISO do
 
   """
   @doc since: "1.12.0"
-  def parse_date("-" <> string, format) when is_binary(string),
+  @spec parse_date(String.t(), format) ::
+          {:ok, {year, month, day}}
+          | {:error, atom}
+  def parse_date(string, format) when is_binary(string) and is_format(format),
+    do: parse_date_guarded(string, format)
+
+  defp parse_date_guarded("-" <> string, format),
     do: do_parse_date(string, -1, format)
 
-  def parse_date("+" <> string, format) when is_binary(string),
+  defp parse_date_guarded("+" <> string, format),
     do: do_parse_date(string, 1, format)
 
-  def parse_date(string, format) when is_binary(string),
+  defp parse_date_guarded(string, format),
     do: do_parse_date(string, 1, format)
 
   defp do_parse_date(unquote(match_basic_date), multiplier, :basic) when unquote(guard_date) do
@@ -412,6 +457,9 @@ defmodule Calendar.ISO do
   """
   @doc since: "1.10.0"
   @impl true
+  @spec parse_naive_datetime(String.t()) ::
+          {:ok, {year, month, day, hour, minute, second, microsecond}}
+          | {:error, atom}
   def parse_naive_datetime(string) when is_binary(string),
     do: parse_naive_datetime(string, :extended)
 
@@ -432,13 +480,19 @@ defmodule Calendar.ISO do
 
   """
   @doc since: "1.12.0"
-  def parse_naive_datetime("-" <> string, format) when is_binary(string),
+  @spec parse_naive_datetime(String.t(), format) ::
+          {:ok, {year, month, day, hour, minute, second, microsecond}}
+          | {:error, atom}
+  def parse_naive_datetime(string, format) when is_binary(string) and is_format(format),
+    do: parse_naive_datetime_guarded(string, format)
+
+  defp parse_naive_datetime_guarded("-" <> string, format),
     do: do_parse_naive_datetime(string, -1, format)
 
-  def parse_naive_datetime("+" <> string, format) when is_binary(string),
+  defp parse_naive_datetime_guarded("+" <> string, format),
     do: do_parse_naive_datetime(string, 1, format)
 
-  def parse_naive_datetime(string, format) when is_binary(string),
+  defp parse_naive_datetime_guarded(string, format),
     do: do_parse_naive_datetime(string, 1, format)
 
   defp do_parse_naive_datetime(
@@ -507,6 +561,9 @@ defmodule Calendar.ISO do
   """
   @doc since: "1.10.0"
   @impl true
+  @spec parse_utc_datetime(String.t()) ::
+          {:ok, {year, month, day, hour, minute, second, microsecond}, utc_offset}
+          | {:error, atom}
   def parse_utc_datetime(string) when is_binary(string),
     do: parse_utc_datetime(string, :extended)
 
@@ -527,13 +584,19 @@ defmodule Calendar.ISO do
 
   """
   @doc since: "1.12.0"
-  def parse_utc_datetime("-" <> string, format) when is_binary(string),
+  @spec parse_utc_datetime(String.t(), format) ::
+          {:ok, {year, month, day, hour, minute, second, microsecond}, utc_offset}
+          | {:error, atom}
+  def parse_utc_datetime(string, format) when is_binary(string) and is_format(format),
+    do: parse_utc_datetime_guarded(string, format)
+
+  defp parse_utc_datetime_guarded("-" <> string, format),
     do: do_parse_utc_datetime(string, -1, format)
 
-  def parse_utc_datetime("+" <> string, format) when is_binary(string),
+  defp parse_utc_datetime_guarded("+" <> string, format),
     do: do_parse_utc_datetime(string, 1, format)
 
-  def parse_utc_datetime(string, format) when is_binary(string),
+  defp parse_utc_datetime_guarded(string, format),
     do: do_parse_utc_datetime(string, 1, format)
 
   defp do_parse_utc_datetime(
@@ -839,8 +902,8 @@ defmodule Calendar.ISO do
     rem(year, 4) === 0 and (rem(year, 100) !== 0 or rem(year, 400) === 0)
   end
 
-  # TODO: Deprecate me on v1.15
   @doc false
+  @deprecated "Use Calendar.ISO.day_of_week/4 instead"
   def day_of_week(year, month, day) do
     day_of_week(year, month, day, :default) |> elem(0)
   end
@@ -985,14 +1048,33 @@ defmodule Calendar.ISO do
   """
   @doc since: "1.8.0"
   @spec year_of_era(year) :: {1..10000, era}
-  @impl true
-  def year_of_era(year) when is_year_CE(year) do
-    {year, 1}
-  end
+  def year_of_era(year) when is_year_CE(year), do: {year, 1}
+  def year_of_era(year) when is_year_BCE(year), do: {abs(year) + 1, 0}
 
-  def year_of_era(year) when is_year_BCE(year) do
-    {abs(year) + 1, 0}
-  end
+  @doc """
+  Calendar callback to compute the year and era from the
+  given `year`, `month` and `day`.
+
+  In the ISO calendar, the new year coincides with the new era,
+  so the `month` and `day` arguments are discarded. If you only
+  have the year available, you can `year_of_era/1` instead.
+
+  ## Examples
+
+      iex> Calendar.ISO.year_of_era(1, 1, 1)
+      {1, 1}
+      iex> Calendar.ISO.year_of_era(2018, 12, 1)
+      {2018, 1}
+      iex> Calendar.ISO.year_of_era(0, 1, 1)
+      {1, 0}
+      iex> Calendar.ISO.year_of_era(-1, 12, 1)
+      {2, 0}
+
+  """
+  @doc since: "1.13.0"
+  @impl true
+  @spec year_of_era(year, month, day) :: {1..10000, era}
+  def year_of_era(year, _month, _day), do: year_of_era(year)
 
   @doc """
   Calculates the day and era from the given `year`, `month`, and `day`.
@@ -1331,6 +1413,46 @@ defmodule Calendar.ISO do
 
   defp zero_pad(val, count) do
     "-" <> zero_pad(-val, count)
+  end
+
+  @doc """
+  Converts the `t:Calendar.iso_days/0` to the first moment of the day.
+
+  ## Examples
+
+      iex> Calendar.ISO.iso_days_to_beginning_of_day({0, {0, 86400000000}})
+      {0, {0, 86400000000}}
+      iex> Calendar.ISO.iso_days_to_beginning_of_day({730485, {43200000000, 86400000000}})
+      {730485, {0, 86400000000}}
+      iex> Calendar.ISO.iso_days_to_beginning_of_day({730485, {46800000000, 86400000000}})
+      {730485, {0, 86400000000}}
+
+  """
+  @doc since: "1.15.0"
+  @impl true
+  @spec iso_days_to_beginning_of_day(Calendar.iso_days()) :: Calendar.iso_days()
+  def iso_days_to_beginning_of_day({days, _day_fraction}) do
+    {days, {0, @parts_per_day}}
+  end
+
+  @doc """
+  Converts the `t:Calendar.iso_days/0` to the last moment of the day.
+
+  ## Examples
+
+      iex> Calendar.ISO.iso_days_to_end_of_day({0, {0, 86400000000}})
+      {0, {86399999999, 86400000000}}
+      iex> Calendar.ISO.iso_days_to_end_of_day({730485, {43200000000, 86400000000}})
+      {730485, {86399999999, 86400000000}}
+      iex> Calendar.ISO.iso_days_to_end_of_day({730485, {46800000000, 86400000000}})
+      {730485, {86399999999, 86400000000}}
+
+  """
+  @doc since: "1.15.0"
+  @impl true
+  @spec iso_days_to_end_of_day(Calendar.iso_days()) :: Calendar.iso_days()
+  def iso_days_to_end_of_day({days, _day_fraction}) do
+    {days, {@parts_per_day - 1, @parts_per_day}}
   end
 
   ## Helpers

@@ -52,9 +52,9 @@ defmodule Mix.Tasks.DepsGitTest do
   end
 
   test "gets and updates Git repos with compilation" do
-    Mix.Project.push(GitApp)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(GitApp)
+
       Mix.Tasks.Deps.Get.run([])
       message = "* Getting git_repo (#{fixture_path("git_repo")})"
       assert_received {:mix_shell, :info, [^message]}
@@ -69,9 +69,9 @@ defmodule Mix.Tasks.DepsGitTest do
   end
 
   test "gets and updates Git repos with submodules" do
-    Mix.Project.push(GitSubmodulesApp)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(GitSubmodulesApp)
+
       Mix.Tasks.Deps.Get.run([])
       message = "* Getting git_repo (#{fixture_path("git_repo")})"
       assert_received {:mix_shell, :info, [^message]}
@@ -82,9 +82,10 @@ defmodule Mix.Tasks.DepsGitTest do
   @tag :git_sparse
   test "gets and updates Git repos with sparse checkout" do
     Process.put(:git_repo_opts, sparse: "sparse_dir")
-    Mix.Project.push(GitApp)
 
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(GitApp)
+
       Mix.Tasks.Deps.Get.run([])
       message = "* Getting git_repo (#{fixture_path("git_repo")})"
       assert_received {:mix_shell, :info, [^message]}
@@ -96,9 +97,10 @@ defmodule Mix.Tasks.DepsGitTest do
 
   test "gets and updates Git repos with subdir" do
     Process.put(:git_repo_opts, subdir: "subdir")
-    Mix.Project.push(GitApp)
 
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(GitApp)
+
       Mix.Tasks.Deps.Get.run([])
       message = "* Getting git_repo (#{fixture_path("git_repo")})"
       assert_received {:mix_shell, :info, [^message]}
@@ -107,9 +109,9 @@ defmodule Mix.Tasks.DepsGitTest do
   end
 
   test "handles invalid .git directory" do
-    Mix.Project.push(GitApp)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(GitApp)
+
       File.mkdir_p!("deps/git_repo/.git")
       Mix.Tasks.Deps.Get.run([])
       message = "* Getting git_repo (#{fixture_path("git_repo")})"
@@ -118,9 +120,9 @@ defmodule Mix.Tasks.DepsGitTest do
   end
 
   test "handles missing .git directory" do
-    Mix.Project.push(GitApp)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(GitApp)
+
       Mix.Tasks.Deps.Get.run([])
       message = "* Getting git_repo (#{fixture_path("git_repo")})"
       assert_received {:mix_shell, :info, [^message]}
@@ -133,9 +135,9 @@ defmodule Mix.Tasks.DepsGitTest do
   end
 
   test "gets and updates many levels deep dependencies" do
-    Mix.Project.push(DepsOnGitApp)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(DepsOnGitApp)
+
       Mix.Tasks.Deps.Get.run([])
 
       message = "* Getting git_repo (#{fixture_path("git_repo")})"
@@ -174,9 +176,9 @@ defmodule Mix.Tasks.DepsGitTest do
   end
 
   test "compiles many levels deep dependencies" do
-    Mix.Project.push(DepsOnGitApp)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(DepsOnGitApp)
+
       Mix.Tasks.Deps.Get.run([])
       refute File.exists?("_build/dev/lib/deps_on_git_repo")
       refute File.exists?("_build/dev/lib/git_repo")
@@ -190,46 +192,10 @@ defmodule Mix.Tasks.DepsGitTest do
     purge([GitRepo, GitRepo.MixProject])
   end
 
-  test "recompiles the project when a dep is fetched" do
-    Mix.Project.push(GitApp)
-
-    in_fixture("no_mixfile", fn ->
-      Mix.Tasks.Deps.Get.run([])
-      assert File.exists?("deps/git_repo/.fetch")
-
-      # We can compile just fine
-      assert Mix.Tasks.Compile.run(["--verbose"]) == {:ok, []}
-
-      # Clear up to prepare for the update
-      Mix.Task.clear()
-      Mix.shell().flush
-      purge([A, B, GitRepo])
-
-      # Update will mark the update required
-      Mix.Tasks.Deps.Update.run(["git_repo"])
-      assert File.exists?("deps/git_repo/.fetch")
-      # Ensure timestamp differs
-      ensure_touched("deps/git_repo/.fetch")
-
-      # mix deps.compile is required...
-      Mix.Tasks.Deps.run([])
-      msg = "  the dependency build is outdated, please run \"mix deps.compile\""
-      assert_received {:mix_shell, :info, [^msg]}
-
-      # But also ran automatically
-      Mix.Tasks.Compile.run(["--verbose"])
-      assert_received {:mix_shell, :info, ["Compiled lib/a.ex"]}
-      assert File.exists?("_build/dev/lib/git_repo/.mix/compile.fetch")
-      :ok
-    end)
-  after
-    purge([A, B, GitRepo, GitRepo.MixProject])
-  end
-
   test "all dependencies are up to date" do
-    Mix.Project.push(GitApp)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(GitApp)
+
       Mix.Tasks.Deps.Get.run([])
       message = "* Getting git_repo (#{fixture_path("git_repo")})"
       assert_received {:mix_shell, :info, [^message]}
@@ -307,9 +273,10 @@ defmodule Mix.Tasks.DepsGitTest do
   @tag :git_sparse
   test "updates the repo when sparse is turned off" do
     Process.put(:git_repo_opts, sparse: "sparse_dir")
-    Mix.Project.push(GitApp)
 
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(GitApp)
+
       Mix.Tasks.Deps.Get.run([])
       refute File.exists?("deps/git_repo/lib/git_repo.ex")
 
@@ -335,9 +302,9 @@ defmodule Mix.Tasks.DepsGitTest do
 
   @tag :git_sparse
   test "updates the repo when sparse is turned on" do
-    Mix.Project.push(GitApp)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(GitApp)
+
       Mix.Tasks.Deps.Get.run([])
       assert File.exists?("deps/git_repo/lib/git_repo.ex")
 
@@ -452,9 +419,9 @@ defmodule Mix.Tasks.DepsGitTest do
   end
 
   test "does not attempt to compile projects that could not be retrieved" do
-    Mix.Project.push(GitErrorApp)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(GitErrorApp)
+
       exception = assert_raise Mix.Error, fn -> Mix.Tasks.Deps.Get.run([]) end
 
       assert Exception.message(exception) =~ "Command \"git --git-dir=.git fetch"
@@ -478,9 +445,9 @@ defmodule Mix.Tasks.DepsGitTest do
   end
 
   test "updates on Git opts change" do
-    Mix.Project.push(GitApp)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(GitApp)
+
       Process.put(:git_repo_opts, tag: "without_module")
       refresh([])
       Mix.Tasks.Deps.Get.run([])
@@ -515,11 +482,5 @@ defmodule Mix.Tasks.DepsGitTest do
     %{name: name, file: file} = Mix.Project.pop()
     Mix.ProjectStack.post_config(post_config)
     Mix.Project.push(name, file)
-  end
-
-  defp get_git_repo_revs(repo) do
-    File.cd!(fixture_path(repo), fn ->
-      Regex.split(~r/\r?\n/, System.cmd("git", ["log", "--format=%H"]) |> elem(0))
-    end)
   end
 end

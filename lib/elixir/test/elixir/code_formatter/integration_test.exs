@@ -57,7 +57,7 @@ defmodule Code.Formatter.IntegrationTest do
     assert_same """
     defp module_attribute_read?({:@, _, [{var, _, var_context}]})
          when is_atom(var) and is_atom(var_context) do
-      Code.Identifier.classify(var) == :callable_local
+      Macro.classify_atom(var) == :identifier
     end
     """
   end
@@ -177,7 +177,7 @@ defmodule Code.Formatter.IntegrationTest do
           str |> Model.Node.model_to_node_type()
 
         value, _ ->
-          Logger.warn("Could not extract node type from value: #{inspect(value)}")
+          Logger.warning("Could not extract node type from value: #{inspect(value)}")
           nil
       end)
     end
@@ -309,7 +309,7 @@ defmodule Code.Formatter.IntegrationTest do
     """
   end
 
-  test "do/end inside binary" do
+  test "do-end inside binary" do
     assert_same """
     <<if true do
         "hello"
@@ -381,6 +381,26 @@ defmodule Code.Formatter.IntegrationTest do
         changeset: changeset,
         categories: categories
     """
+  end
+
+  test "keyword list at line limit" do
+    bad = """
+    pre()
+    config(arg, foo: bar)
+    post()
+    """
+
+    good = """
+    pre()
+
+    config(arg,
+      foo: bar
+    )
+
+    post()
+    """
+
+    assert_format bad, good, line_length: 20
   end
 
   test "do at the end of the line with single argument" do
@@ -484,12 +504,12 @@ defmodule Code.Formatter.IntegrationTest do
   test "newline after stab" do
     assert_same """
     capture_io(":erl. mof*,,l", fn ->
-      assert :io.scan_erl_form('>') == {:ok, [{:":", 1}, {:atom, 1, :erl}, {:dot, 1}], 1}
+      assert :io.scan_erl_form(~c">") == {:ok, [{:":", 1}, {:atom, 1, :erl}, {:dot, 1}], 1}
 
       expected_tokens = [{:atom, 1, :mof}, {:*, 1}, {:",", 1}, {:",", 1}, {:atom, 1, :l}]
-      assert :io.scan_erl_form('>') == {:ok, expected_tokens, 1}
+      assert :io.scan_erl_form(~c">") == {:ok, expected_tokens, 1}
 
-      assert :io.scan_erl_form('>') == {:eof, 1}
+      assert :io.scan_erl_form(~c">") == {:eof, 1}
     end)
     """
   end
@@ -619,5 +639,68 @@ defmodule Code.Formatter.IntegrationTest do
           when x
           when y
     """
+  end
+
+  test "nested heredocs with multi-line string in interpolation" do
+    bad = ~S'''
+    def foo do
+      """
+      #{(feature_flag(:feature_x) && "
+      new_field
+      " || "")}
+      """
+    end
+    '''
+
+    good = ~S'''
+    def foo do
+      """
+      #{(feature_flag(:feature_x) && "
+      new_field
+      ") || ""}
+      """
+    end
+    '''
+
+    assert_format bad, good
+  end
+
+  test "functions with infinity line length" do
+    assert_same ~S"""
+                x = fn ->
+                  {:ok, pid} = Repl.start_link({self(), opts})
+                  assert Exception.message(error) =~ msg
+                end
+                """,
+                line_length: :infinity
+
+    assert_same ~S"""
+                capture_log(fn x ->
+                  {:ok, pid} = Repl.start_link({self(), opts})
+                  assert Exception.message(error) =~ msg
+                end) =~ msg
+                """,
+                line_length: :infinity
+
+    assert_same ~S"""
+                capture_log(fn ->
+                  {:ok, pid} = Repl.start_link({self(), opts})
+                  assert Exception.message(error) =~ msg
+                end) =~ msg
+                """,
+                line_length: :infinity
+
+    assert_same ~S"""
+                capture_log(fn x ->
+                  {:ok, pid} = Repl.start_link({self(), opts})
+                  assert Exception.message(error) =~ msg
+                end) =~ msg
+                """,
+                line_length: :infinity
+  end
+
+  test "functions without parentheses within do: keyword" do
+    assert_format ~S"defmodule Foo, do: foo bar, baz",
+                  ~S"defmodule Foo, do: foo(bar, baz)"
   end
 end

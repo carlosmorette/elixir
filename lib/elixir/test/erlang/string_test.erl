@@ -3,17 +3,16 @@
 -include_lib("eunit/include/eunit.hrl").
 
 eval(Content) ->
-  {Value, Binding, _} =
-    elixir:eval_forms(elixir:'string_to_quoted!'(Content, 1, 1, <<"nofile">>, []), [], []),
+  Quoted = elixir:'string_to_quoted!'(Content, 1, 1, <<"nofile">>, []),
+  {Value, Binding, _} = elixir:eval_forms(Quoted, [], elixir:env_for_eval([])),
   {Value, Binding}.
 
 extract_interpolations(String) ->
-  Tokenizer = #elixir_tokenizer{file = <<"nofile">>},
-  case elixir_interpolation:extract(1, 1, Tokenizer, true, String ++ [$"], $") of
+  case elixir_interpolation:extract(1, 1, #elixir_tokenizer{}, true, String ++ [$"], $") of
     {error, Error} ->
       Error;
-    {_, _, Z, _} ->
-      Z
+    {_, _, Parts, _, _} ->
+      Parts
    end.
 
 % Interpolations
@@ -23,23 +22,23 @@ extract_interpolations_without_interpolation_test() ->
 
 extract_interpolations_with_escaped_interpolation_test() ->
   ["f\\#{o}o"] = extract_interpolations("f\\#{o}o"),
-  {1, 8, ["f\\#{o}o"], []} = elixir_interpolation:extract(1, 2,
-    #elixir_tokenizer{file = <<"nofile">>}, true, "f\\#{o}o\"", $").
+  {1, 10, ["f\\#{o}o"], [], _} =
+    elixir_interpolation:extract(1, 2, #elixir_tokenizer{}, true, "f\\#{o}o\"", $").
 
 extract_interpolations_with_interpolation_test() ->
   ["f",
-   {{1, 2, nil}, {1, 6, nil}, [{atom, {1, 4, nil}, o}]},
+   {{1, 2, nil}, {1, 6, nil}, [{atom, {1, 4, _}, o}]},
    "o"] = extract_interpolations("f#{:o}o").
 
 extract_interpolations_with_two_interpolations_test() ->
   ["f",
-   {{1, 2, nil}, {1, 6, nil}, [{atom, {1, 4, nil}, o}]},
-   {{1, 7, nil}, {1, 11, nil}, [{atom, {1, 9, nil}, o}]},
+   {{1, 2, nil}, {1, 6, nil}, [{atom, {1, 4, _}, o}]},
+   {{1, 7, nil}, {1, 11, nil}, [{atom, {1, 9, _}, o}]},
    "o"] = extract_interpolations("f#{:o}#{:o}o").
 
 extract_interpolations_with_only_two_interpolations_test() ->
-  [{{1, 1, nil}, {1, 5, nil}, [{atom, {1, 3, nil}, o}]},
-   {{1, 6, nil}, {1, 10, nil}, [{atom, {1, 8, nil}, o}]}] = extract_interpolations("#{:o}#{:o}").
+  [{{1, 1, nil}, {1, 5, nil}, [{atom, {1, 3, _}, o}]},
+   {{1, 6, nil}, {1, 10, nil}, [{atom, {1, 8, _}, o}]}] = extract_interpolations("#{:o}#{:o}").
 
 extract_interpolations_with_tuple_inside_interpolation_test() ->
   ["f",

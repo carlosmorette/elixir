@@ -338,7 +338,14 @@ defmodule Mix.Local.Installer do
 
       with_reset_prod_env(fn ->
         Mix.ProjectStack.on_clean_slate(fn ->
-          Mix.Project.in_project(:mix_local_installer, tmp_path, in_fetcher)
+          tmp_path =
+            Mix.Project.in_project(:mix_local_installer, tmp_path, [], fn mix_exs ->
+              in_fetcher.(mix_exs)
+
+              # The tmp_dir may have symlinks in it, so we properly resolve
+              # the directory before customizing deps_path and lockfile.
+              File.cwd!()
+            end)
 
           package_name = elem(dep_spec, 0)
           package_name_string = Atom.to_string(package_name)

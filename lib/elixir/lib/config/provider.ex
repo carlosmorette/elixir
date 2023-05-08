@@ -20,8 +20,8 @@ defmodule Config.Provider do
 
   For example, imagine you want to list some basic configuration
   on Mix's built-in `config/runtime.exs` file, but you also want
-  some additional configuration files. To do so, you can do this
-  in your `mix.exs`:
+  to support additional configuration files. To do so, you can add
+  this inside the `def project` portion of  your `mix.exs`:
 
       releases: [
         demo: [
@@ -42,7 +42,8 @@ defmodule Config.Provider do
       simply copy it to the release root as a step in your deployment
 
   Now once the system boots, it will load both `config/runtime.exs`
-  and `extra_config.exs` early in the boot process.
+  and `extra_config.exs` early in the boot process. You can learn
+  more options on `Config.Reader`.
 
   ## Custom config provider
 
@@ -55,8 +56,10 @@ defmodule Config.Provider do
         @behaviour Config.Provider
 
         # Let's pass the path to the JSON file as config
+        @impl true
         def init(path) when is_binary(path), do: path
 
+        @impl true
         def load(config, path) do
           # We need to start any app we may depend on.
           {:ok, _} = Application.ensure_all_started(:jason)
@@ -227,7 +230,6 @@ defmodule Config.Provider do
   end
 
   defp boot_providers(path, provider, reboot_config, reboot_fun) do
-    validate_no_cyclic_boot!(path)
     original_config = read_config!(path)
 
     config =
@@ -265,46 +267,65 @@ defmodule Config.Provider do
   end
 
   defp maybe_validate_compile_env(provider) do
-    with [_ | _] = compile_env <- provider.validate_compile_env do
-      validate_compile_env(compile_env)
+    with [_ | _] = compile_env <- provider.validate_compile_env,
+         {:error, message} <- validate_compile_env(compile_env) do
+      abort(message)
     end
   end
 
   @doc false
-  def validate_compile_env(compile_env, ensure_loaded? \\ true) do
-    for {app, [key | path], compile_return} <- compile_env,
-        ensure_app_loaded?(app, ensure_loaded?) do
+  def valid_compile_env?(compile_env) do
+    Enum.all?(compile_env, fn {app, [key | path], compile_return} ->
+      try do
+        traverse_env(Application.fetch_env(app, key), path) == compile_return
+      rescue
+        _ -> false
+      end
+    end)
+  end
+
+  @doc false
+  def validate_compile_env(compile_env, ensure_loaded? \\ true)
+
+  def validate_compile_env([{app, [key | path], compile_return} | compile_env], ensure_loaded?) do
+    if ensure_app_loaded?(app, ensure_loaded?) do
       try do
         traverse_env(Application.fetch_env(app, key), path)
       rescue
         e ->
-          abort("""
-          application #{inspect(app)} failed reading its compile environment #{path(key, path)}:
+          {:error,
+           """
+           application #{inspect(app)} failed reading its compile environment #{path(key, path)}:
 
-          #{Exception.format(:error, e, __STACKTRACE__)}
+           #{Exception.format(:error, e, __STACKTRACE__)}
 
-          Expected it to match the compile time value of #{return_to_text(compile_return)}.
+           Expected it to match the compile time value of #{return_to_text(compile_return)}.
 
-          #{compile_env_tips(app)}
-          """)
+           #{compile_env_tips(app)}
+           """}
       else
         ^compile_return ->
-          :ok
+          validate_compile_env(compile_env, ensure_loaded?)
 
         runtime_return ->
-          abort("""
-          the application #{inspect(app)} has a different value set #{path(key, path)} \
-          during runtime compared to compile time. Since this application environment entry was \
-          marked as compile time, this difference can lead to different behaviour than expected:
+          {:error,
+           """
+           the application #{inspect(app)} has a different value set #{path(key, path)} \
+           during runtime compared to compile time. Since this application environment entry was \
+           marked as compile time, this difference can lead to different behaviour than expected:
 
-            * Compile time value #{return_to_text(compile_return)}
-            * Runtime value #{return_to_text(runtime_return)}
+             * Compile time value #{return_to_text(compile_return)}
+             * Runtime value #{return_to_text(runtime_return)}
 
-          #{compile_env_tips(app)}
-          """)
+           #{compile_env_tips(app)}
+           """}
       end
+    else
+      validate_compile_env(compile_env, ensure_loaded?)
     end
+  end
 
+  def validate_compile_env([], _ensure_loaded?) do
     :ok
   end
 
@@ -339,8 +360,7 @@ defmodule Config.Provider do
   defp restart_and_sleep() do
     mode = Application.get_env(:elixir, @reboot_mode_key)
 
-    # TODO: Remove otp_release check once we require Erlang/OTP 23+
-    if :erlang.system_info(:otp_release) >= '23' and mode in [:embedded, :interactive] do
+    if mode in [:embedded, :interactive] do
       :init.restart(mode: mode)
     else
       :init.restart()
@@ -351,14 +371,6 @@ defmodule Config.Provider do
 
   defp booted_value(%{prune_runtime_sys_config_after_boot: true}, path), do: {:booted, path}
   defp booted_value(%{prune_runtime_sys_config_after_boot: false}, _path), do: {:booted, nil}
-
-  defp validate_no_cyclic_boot!(path) do
-    if System.get_env("ELIXIR_CONFIG_PROVIDER_BOOTED") do
-      bad_path_abort("Got infinite loop when running Config.Provider", path)
-    else
-      System.put_env("ELIXIR_CONFIG_PROVIDER_BOOTED", "1")
-    end
-  end
 
   defp read_config!(path) do
     case :file.consult(path) do
@@ -416,7 +428,7 @@ defmodule Config.Provider do
   end
 
   defp abort(msg) do
-    IO.puts(:stderr, "ERROR! " <> msg)
+    IO.puts("ERROR! " <> msg)
     :erlang.raise(:error, "aborting boot", [{Config.Provider, :boot, 2, []}])
   end
 end

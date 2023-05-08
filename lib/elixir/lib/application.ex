@@ -42,18 +42,36 @@ defmodule Application do
       end
 
   In Mix projects, the environment of the application and its dependencies can
-  be overridden via the `config/config.exs` file. For example, someone using
-  your application can override its `:db_host` environment variable as follows:
+  be overridden via the `config/config.exs` and `config/runtime.exs` files. The
+  former is loaded at build-time, before your code compiles, and the latter at
+  runtime, just before your app starts. For example, someone using your application
+  can override its `:db_host` environment variable as follows:
 
       import Config
       config :my_app, :db_host, "db.local"
 
+  See the "Configuration" section in the `Mix` module for more information.
   You can also change the application environment dynamically by using functions
-  such as `put_env/3` and `delete_env/2`. However, as a rule of thumb, each application
-  is responsible for its own environment. Please do not use the functions in this
-  module for directly accessing or modifying the environment of other applications.
+  such as `put_env/3` and `delete_env/2`.
 
-  ### Compile-time environment
+  > #### Environment in libraries {: .tip}
+  >
+  > The config files `config/config.exs` and `config/runtime.exs`
+  > are rarely used by libraries. Libraries typically define their environment
+  > in the `application/0` function of their `mix.exs`. Configuration files
+  > are rather used by applications to configure their libraries.
+
+  > #### Reading the environment of other applications {: .warning}
+  >
+  > Each application is responsible for its own environment. Do not
+  > use the functions in this module for directly accessing or modifying
+  > the environment of other applications. Whenever you change the application
+  > environment, Elixir's build tool will only recompile the files that
+  > belong to that application. So if you read the application environment
+  > of another application, there is a chance you will be depending on
+  > outdated configuration, as your file won't be recompiled as it changes.
+
+  ## Compile-time environment
 
   In the previous example, we read the application environment at runtime:
 
@@ -71,36 +89,48 @@ defmodule Application do
   will only be read when `MyApp.DBClient` effectively starts. While reading
   the application environment at runtime is the preferred approach, in some
   rare occasions you may want to use the application environment to configure
-  the compilation of a certain project. This is often done by calling `get_env/3`
-  outside of a function:
+  the compilation of a certain project. However, if you try to access
+  `Application.fetch_env!/2` outside of a function:
 
       defmodule MyApp.DBClient do
-        @db_host Application.get_env(:my_app, :db_host, "db.local")
+        @db_host Application.fetch_env!(:my_app, :db_host)
 
         def start_link() do
           SomeLib.DBClient.start_link(host: @db_host)
         end
       end
 
-  This approach has one big limitation: if you change the value of the
-  application environment after the code is compiled, the value used at
-  runtime is not going to change! For example, if your `config/runtime.exs`
-  has:
+  You might see warnings and errors:
 
-      config :my_app, :db_host, "db.production"
+      warning: Application.fetch_env!/2 is discouraged in the module body,
+      use Application.compile_env/3 instead
+        iex:3: MyApp.DBClient
 
-  This value will have no effect as the code was compiled to connect to "db.local",
-  which is mostly likely unavailable in the production environment.
+      ** (ArgumentError) could not fetch application environment :db_host
+      for application :my_app because the application was not loaded nor
+      configured
 
-  For those reasons, reading the application environment at runtime should be the
-  first choice. However, if you really have to read the application environment
-  during compilation, we recommend you to use `compile_env/3` instead:
+  This happens because, when defining modules, the application environment
+  is not yet available. Luckily, the warning tells us how to solve this
+  issue, by using `Application.compile_env/3` instead:
 
-      @db_host Application.compile_env(:my_app, :db_host, "db.local")
+      defmodule MyApp.DBClient do
+        @db_host Application.compile_env(:my_app, :db_host, "db.local")
 
-  By using `compile_env/3`, tools like Mix will store the values used during
-  compilation and compare the compilation values with the runtime values whenever
-  your system starts, raising an error in case they differ.
+        def start_link() do
+          SomeLib.DBClient.start_link(host: @db_host)
+        end
+      end
+
+  The difference here is that `compile_env` expects the default value to be
+  given as an argument, instead of using the `def application` function of
+  your `mix.exs`. Furthermore, by using `compile_env/3`, tools like Mix will
+  store the values used during compilation and compare the compilation values
+  with the runtime values whenever your system starts, raising an error in
+  case they differ.
+
+  In any case, compile-time environments should be avoided. Whenever possible,
+  reading the application environment at runtime should be the first choice.
 
   ## The application callback module
 
@@ -163,7 +193,7 @@ defmodule Application do
   In the sections above, we have configured an application in the
   `application/0` section of the `mix.exs` file. Ultimately, Mix will use
   this configuration to create an [*application resource
-  file*](https://erlang.org/doc/man/application.html), which is a file called
+  file*](https://www.erlang.org/doc/man/application.html), which is a file called
   `APP_NAME.app`. For example, the application resource file of the OTP
   application `ex_unit` is called `ex_unit.app`.
 
@@ -268,9 +298,9 @@ defmodule Application do
 
   For further details on applications please check the documentation of the
   [`:application` Erlang module](`:application`), and the
-  [Applications](https://erlang.org/doc/design_principles/applications.html)
+  [Applications](https://www.erlang.org/doc/design_principles/applications.html)
   section of the [OTP Design Principles User's
-  Guide](https://erlang.org/doc/design_principles/users_guide.html).
+  Guide](https://www.erlang.org/doc/design_principles/users_guide.html).
   """
 
   @doc """
@@ -385,6 +415,7 @@ defmodule Application do
     :maxT,
     :registered,
     :included_applications,
+    :optional_applications,
     :applications,
     :mod,
     :start_phases
@@ -498,33 +529,34 @@ defmodule Application do
   Giving a path is useful to let Elixir know that only certain paths
   in a large configuration are compile time dependent.
   """
-  # TODO: Warn on v1.14 if get_env/fetch_env/fetch_env! is used at
-  # compile time instead of compile_env
   @doc since: "1.10.0"
   @spec compile_env(app, key | list, value) :: value
-  defmacro compile_env(app, key_or_path, default \\ nil) when is_atom(app) do
+  defmacro compile_env(app, key_or_path, default \\ nil) do
     if __CALLER__.function do
       raise "Application.compile_env/3 cannot be called inside functions, only in the module body"
     end
 
-    key_or_path = expand_key_or_path(key_or_path, __CALLER__)
+    key_or_path = Macro.expand_literals(key_or_path, %{__CALLER__ | function: {:__info__, 1}})
 
     quote do
-      Application.__compile_env__(unquote(app), unquote(key_or_path), unquote(default), __ENV__)
+      Application.compile_env(__ENV__, unquote(app), unquote(key_or_path), unquote(default))
     end
   end
 
-  defp expand_key_or_path({:__aliases__, _, _} = alias, env),
-    do: Macro.expand(alias, %{env | function: {:__info__, 1}})
+  @doc """
+  Reads the application environment at compilation time from a macro.
 
-  defp expand_key_or_path(list, env) when is_list(list),
-    do: Enum.map(list, &expand_key_or_path(&1, env))
+  Typically, developers will use `compile_env/3`. This function must
+  only be invoked from macros which aim to read the compilation environment
+  dynamically.
 
-  defp expand_key_or_path(other, _env),
-    do: other
-
-  @doc false
-  def __compile_env__(app, key_or_path, default, env) do
+  It expects a `Macro.Env` as first argument, where the `Macro.Env` is
+  typically the `__CALLER__` in a macro. It raises if `Macro.Env` comes
+  from a function.
+  """
+  @doc since: "1.14.0"
+  @spec compile_env(Macro.Env.t(), app, key | list, value) :: value
+  def compile_env(%Macro.Env{} = env, app, key_or_path, default) do
     case fetch_compile_env(app, key_or_path, env) do
       {:ok, value} -> value
       :error -> default
@@ -539,20 +571,33 @@ defmodule Application do
   """
   @doc since: "1.10.0"
   @spec compile_env!(app, key | list) :: value
-  defmacro compile_env!(app, key_or_path) when is_atom(app) do
+  defmacro compile_env!(app, key_or_path) do
     if __CALLER__.function do
       raise "Application.compile_env!/2 cannot be called inside functions, only in the module body"
     end
 
-    key_or_path = expand_key_or_path(key_or_path, __CALLER__)
+    key_or_path = Macro.expand_literals(key_or_path, %{__CALLER__ | function: {:__info__, 1}})
 
     quote do
-      Application.__compile_env__!(unquote(app), unquote(key_or_path), __ENV__)
+      Application.compile_env!(__ENV__, unquote(app), unquote(key_or_path))
     end
   end
 
-  @doc false
-  def __compile_env__!(app, key_or_path, env) do
+  @doc """
+  Reads the application environment at compilation time from a macro
+  or raises.
+
+  Typically, developers will use `compile_env!/2`. This function must
+  only be invoked from macros which aim to read the compilation environment
+  dynamically.
+
+  It expects a `Macro.Env` as first argument, where the `Macro.Env` is
+  typically the `__CALLER__` in a macro. It raises if `Macro.Env` comes
+  from a function.
+  """
+  @doc since: "1.14.0"
+  @spec compile_env!(Macro.Env.t(), app, key | list) :: value
+  def compile_env!(%Macro.Env{} = env, app, key_or_path) do
     case fetch_compile_env(app, key_or_path, env) do
       {:ok, value} ->
         value
@@ -564,8 +609,9 @@ defmodule Application do
     end
   end
 
-  defp fetch_compile_env(app, key, env) when is_atom(key),
-    do: fetch_compile_env(app, key, [], env)
+  defp fetch_compile_env(app, key, env) when is_atom(key) do
+    fetch_compile_env(app, key, [], env)
+  end
 
   defp fetch_compile_env(app, [key | paths], env) when is_atom(key),
     do: fetch_compile_env(app, key, paths, env)
@@ -590,14 +636,17 @@ defmodule Application do
   If the configuration parameter does not exist, the function returns the
   `default` value.
 
-  **Important:** if you are reading the application environment at compilation
-  time, for example, inside the module definition instead of inside of a
-  function, see `compile_env/3` instead.
+  > #### Warning {: .warning}
+  >
+  > You must use this function to read only your own application
+  > environment. Do not read the environment of other applications.
 
-  **Important:** if you are writing a library to be used by other developers,
-  it is generally recommended to avoid the application environment, as the
-  application environment is effectively a global storage. For more information,
-  read our [library guidelines](library-guidelines.md).
+  > #### Application environment in libraries {: .info}
+  >
+  > If you are writing a library to be used by other developers,
+  > it is generally recommended to avoid the application environment, as the
+  > application environment is effectively a global storage. For more information,
+  > read our [library guidelines](library-guidelines.md).
 
   ## Examples
 
@@ -647,6 +696,18 @@ defmodule Application do
   Returns the value for `key` in `app`'s environment in a tuple.
 
   If the configuration parameter does not exist, the function returns `:error`.
+
+  > #### Warning {: .warning}
+  >
+  > You must use this function to read only your own application
+  > environment. Do not read the environment of other applications.
+
+  > #### Application environment in info
+  >
+  > If you are writing a library to be used by other developers,
+  > it is generally recommended to avoid the application environment, as the
+  > application environment is effectively a global storage. For more information,
+  > read our [library guidelines](library-guidelines.md).
   """
   @spec fetch_env(app, key) :: {:ok, value} | :error
   def fetch_env(app, key) when is_atom(app) do
@@ -663,9 +724,17 @@ defmodule Application do
 
   If the configuration parameter does not exist, raises `ArgumentError`.
 
-  **Important:** if you are reading the application environment at compilation
-  time, for example, inside the module definition instead of inside of a
-  function, see `compile_env!/2` instead.
+  > #### Warning {: .warning}
+  >
+  > You must use this function to read only your own application
+  > environment. Do not read the environment of other applications.
+
+  > #### Application environment in info
+  >
+  > If you are writing a library to be used by other developers,
+  > it is generally recommended to avoid the application environment, as the
+  > application environment is effectively a global storage. For more information,
+  > read our [library guidelines](library-guidelines.md).
   """
   @spec fetch_env!(app, key) :: value
   def fetch_env!(app, key) when is_atom(app) do
@@ -757,21 +826,31 @@ defmodule Application do
   Ensures the given `app` is started.
 
   Same as `start/2` but returns `:ok` if the application was already
-  started. This is useful in scripts and in test setup, where test
-  applications need to be explicitly started:
+  started.
 
-      :ok = Application.ensure_started(:my_test_dep)
+  ## Options
+
+    * `:type` - if the application should be started in `:permanent`,
+      `:temporary`, or `:transient`. See `start/2` for more information.
 
   """
-  @spec ensure_started(app, restart_type) :: :ok | {:error, term}
-  def ensure_started(app, type \\ :temporary) when is_atom(app) do
+  @spec ensure_started(app, type: restart_type()) :: :ok | {:error, term}
+  def ensure_started(app, opts \\ [])
+
+  def ensure_started(app, type) when is_atom(app) and is_atom(type) do
+    # TODO: Deprecate me on Elixir v1.19
     :application.ensure_started(app, type)
+  end
+
+  def ensure_started(app, opts) when is_atom(app) and is_list(opts) do
+    opts = Keyword.validate!(opts, type: :temporary)
+    :application.ensure_started(app, opts[:type])
   end
 
   @doc """
   Ensures the given `app` is loaded.
 
-  Same as `load/2` but returns `:ok` if the application was already
+  Same as `load/1` but returns `:ok` if the application was already
   loaded.
   """
   @doc since: "1.10.0"
@@ -785,15 +864,46 @@ defmodule Application do
   end
 
   @doc """
-  Ensures the given `app` and its applications are started.
+  Ensures the given `app` or `apps` and their child applications are started.
 
-  Same as `start/2` but also starts the applications listed under
-  `:applications` in the `.app` file in case they were not previously
-  started.
+  ## Options
+
+    * `:type` - if the application should be started in `:permanent`,
+      `:temporary`, or `:transient`. See `start/2` for more information.
+
+    * `:mode` - (since v1.15.0) if the applications should be started serially
+      or concurrently. This option requires Erlang/OTP 26+.
+
   """
-  @spec ensure_all_started(app, restart_type) :: {:ok, [app]} | {:error, {app, term}}
-  def ensure_all_started(app, type \\ :temporary) when is_atom(app) do
-    :application.ensure_all_started(app, type)
+  @spec ensure_all_started(app | [app], type: restart_type(), mode: :serial | :concurrent) ::
+          {:ok, [app]} | {:error, term}
+  def ensure_all_started(app_or_apps, opts \\ [])
+
+  def ensure_all_started(app, type) when is_atom(type) do
+    # TODO: Deprecate me on Elixir v1.19
+    ensure_all_started(app, type: type)
+  end
+
+  def ensure_all_started(app, opts) when is_atom(app) do
+    ensure_all_started([app], opts)
+  end
+
+  @compile {:no_warn_undefined, {:application, :ensure_all_started, 3}}
+
+  def ensure_all_started(apps, opts) when is_list(apps) and is_list(opts) do
+    opts = Keyword.validate!(opts, type: :temporary, mode: :serial)
+
+    if function_exported?(:application, :ensure_all_started, 3) do
+      :application.ensure_all_started(apps, opts[:type], opts[:mode])
+    else
+      # TODO: Remove this clause when we require Erlang/OTP 26+
+      Enum.reduce_while(apps, {:ok, []}, fn app, {:ok, acc} ->
+        case :application.ensure_all_started(app, opts[:type]) do
+          {:ok, apps} -> {:cont, {:ok, apps ++ acc}}
+          {:error, e} -> {:halt, {:error, e}}
+        end
+      end)
+    end
   end
 
   @doc """
@@ -810,29 +920,39 @@ defmodule Application do
   In case you want to automatically load **and start** all of `app`'s dependencies,
   see `ensure_all_started/2`.
 
-  The `type` argument specifies the type of the application:
+  ## Options
 
-    * `:permanent` - if `app` terminates, all other applications and the entire
-      node are also terminated.
+    * `:type` - specifies the type of the application:
 
-    * `:transient` - if `app` terminates with `:normal` reason, it is reported
-      but no other applications are terminated. If a transient application
-      terminates abnormally, all other applications and the entire node are
-      also terminated.
+      * `:permanent` - if `app` terminates, all other applications and the entire
+        node are also terminated.
 
-    * `:temporary` - if `app` terminates, it is reported but no other
-      applications are terminated (the default).
+      * `:transient` - if `app` terminates with `:normal` reason, it is reported
+        but no other applications are terminated. If a transient application
+        terminates abnormally, all other applications and the entire node are
+        also terminated.
 
-  Note that it is always possible to stop an application explicitly by calling
-  `stop/1`. Regardless of the type of the application, no other applications will
-  be affected.
+      * `:temporary` - if `app` terminates, it is reported but no other
+        applications are terminated (the default).
 
-  Note also that the `:transient` type is of little practical use, since when a
-  supervision tree terminates, the reason is set to `:shutdown`, not `:normal`.
+      Note that it is always possible to stop an application explicitly by calling
+      `stop/1`. Regardless of the type of the application, no other applications will
+      be affected.
+
+      Note also that the `:transient` type is of little practical use, since when a
+      supervision tree terminates, the reason is set to `:shutdown`, not `:normal`.
   """
-  @spec start(app, restart_type) :: :ok | {:error, term}
-  def start(app, type \\ :temporary) when is_atom(app) do
+  @spec start(app, type: restart_type()) :: :ok | {:error, term}
+  def start(app, opts \\ [])
+
+  def start(app, type) when is_atom(app) and is_atom(type) do
+    # TODO: Deprecate me on Elixir v1.19
     :application.start(app, type)
+  end
+
+  def start(app, opts) when is_atom(app) and is_list(opts) do
+    opts = Keyword.validate!(opts, type: :temporary)
+    :application.start(app, opts[:type])
   end
 
   @doc """
@@ -1022,7 +1142,7 @@ defmodule Application do
     "bad application start specs: #{inspect(spec)}"
   end
 
-  defp do_format_error({'no such file or directory', file}) do
+  defp do_format_error({~c"no such file or directory", file}) do
     "could not find application file: #{file}"
   end
 

@@ -14,16 +14,30 @@ defmodule Mix.Tasks.Deps.Loadpaths do
 
   ## Command line options
 
-    * `--no-compile` - does not compile dependencies
+    * `--no-archives-check` - does not check archives
+    * `--no-compile` - does not compile even if files require compilation
     * `--no-deps-check` - does not check or compile deps, only load available ones
+    * `--no-deps-loading` - does not add deps loadpaths to the code path
     * `--no-elixir-version-check` - does not check Elixir version
-    * `--no-load-deps` - does not add deps loadpaths to the code path
+    * `--no-optional-deps` - does not compile or load optional deps
 
   """
 
   @impl true
   def run(args) do
+    unless "--no-archives-check" in args do
+      Mix.Task.run("archive.check", args)
+    end
+
     all = Mix.Dep.load_and_cache()
+
+    all =
+      if "--no-optional-deps" in args do
+        for dep <- all, dep.opts[:optional] != true, do: dep
+      else
+        all
+      end
+
     config = Mix.Project.config()
 
     unless "--no-elixir-version-check" in args do
@@ -34,16 +48,11 @@ defmodule Mix.Tasks.Deps.Loadpaths do
       deps_check(all, "--no-compile" in args)
     end
 
-    unless "--no-load-deps" in args do
-      load_paths =
-        for dep <- all,
-            path <- Mix.Dep.load_paths(dep) do
-          _ = Code.prepend_path(path)
-          path
-        end
-
-      prune_deps(config, load_paths, "--no-deps-check" in args)
+    unless "--no-deps-loading" in args do
+      Code.prepend_paths(Enum.flat_map(all, &Mix.Dep.load_paths/1), cache: true)
     end
+
+    :ok
   end
 
   defp check_elixir_version(config) do
@@ -63,40 +72,8 @@ defmodule Mix.Tasks.Deps.Loadpaths do
     end
   end
 
-  # If the build is per environment, we should be able to look
-  # at all dependencies and remove the builds that no longer
-  # have a dependency defined for them.
-  #
-  # Note that we require the build_path to be nil. If it is not nil,
-  # it means the build_path is shared so we don't delete entries.
-  #
-  # We also expect env_path to be nil. If it is not nil, it means
-  # it was set by a parent application and the parent application
-  # should be the one doing the pruning.
-  defp prune_deps(config, load_paths, no_check?) do
-    shared_build? =
-      no_check? or config[:build_path] != nil or config[:build_per_environment] == false
-
-    config
-    |> Mix.Project.build_path()
-    |> Path.join("lib/*/ebin")
-    |> Path.wildcard()
-    |> List.delete(config[:app] && Mix.Project.compile_path(config))
-    |> Kernel.--(load_paths)
-    |> Enum.each(&prune_path(&1, shared_build?))
-  end
-
-  defp prune_path(path, shared_build?) do
-    _ = Code.delete_path(path)
-
-    unless shared_build? do
-      path |> Path.dirname() |> File.rm_rf!()
-    end
-  end
-
   defp deps_check(all, no_compile?) do
     all = Enum.map(all, &check_lock/1)
-
     {not_ok, compile} = partition(all, [], [])
 
     cond do
@@ -113,7 +90,7 @@ defmodule Mix.Tasks.Deps.Loadpaths do
         |> Enum.map(& &1.app)
         |> Mix.Dep.filter_by_name(Mix.Dep.load_and_cache())
         |> Enum.filter(&(not Mix.Dep.ok?(&1)))
-        |> show_not_ok!
+        |> show_not_ok!()
     end
   end
 

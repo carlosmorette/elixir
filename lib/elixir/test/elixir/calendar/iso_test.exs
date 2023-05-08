@@ -62,14 +62,14 @@ defmodule Calendar.ISOTest do
     end
   end
 
-  describe "day_of_week/3" do
+  describe "day_of_week/4" do
     test "raises with invalid dates" do
       assert_raise ArgumentError, "invalid date: 2018-02-30", fn ->
-        Calendar.ISO.day_of_week(2018, 2, 30)
+        Calendar.ISO.day_of_week(2018, 2, 30, :default)
       end
 
       assert_raise ArgumentError, "invalid date: 2017-11-00", fn ->
-        Calendar.ISO.day_of_week(2017, 11, 0)
+        Calendar.ISO.day_of_week(2017, 11, 0, :default)
       end
     end
   end
@@ -98,22 +98,29 @@ defmodule Calendar.ISOTest do
     end
   end
 
-  test "year_of_era/1" do
+  test "year_of_era/3" do
+    # Compatibility tests for year_of_era/1
     assert Calendar.ISO.year_of_era(-9999) == {10000, 0}
     assert Calendar.ISO.year_of_era(-1) == {2, 0}
     assert Calendar.ISO.year_of_era(0) == {1, 0}
     assert Calendar.ISO.year_of_era(1) == {1, 1}
     assert Calendar.ISO.year_of_era(1984) == {1984, 1}
 
+    assert Calendar.ISO.year_of_era(-9999, 1, 1) == {10000, 0}
+    assert Calendar.ISO.year_of_era(-1, 1, 1) == {2, 0}
+    assert Calendar.ISO.year_of_era(0, 12, 1) == {1, 0}
+    assert Calendar.ISO.year_of_era(1, 12, 1) == {1, 1}
+    assert Calendar.ISO.year_of_era(1984, 12, 1) == {1984, 1}
+
     random_positive_year = Enum.random(1..9999)
-    assert Calendar.ISO.year_of_era(random_positive_year) == {random_positive_year, 1}
+    assert Calendar.ISO.year_of_era(random_positive_year, 1, 1) == {random_positive_year, 1}
 
     assert_raise FunctionClauseError, fn ->
-      Calendar.ISO.year_of_era(10000)
+      Calendar.ISO.year_of_era(10000, 1, 1)
     end
 
     assert_raise FunctionClauseError, fn ->
-      Calendar.ISO.year_of_era(-10000)
+      Calendar.ISO.year_of_era(-10000, 12, 1)
     end
   end
 
@@ -141,8 +148,13 @@ defmodule Calendar.ISOTest do
     end
 
     test "errors on other format names" do
-      assert Calendar.ISO.parse_date("20150123", :other) == {:error, :invalid_format}
-      assert Calendar.ISO.parse_date("2015-01-23", :other) == {:error, :invalid_format}
+      assert_raise FunctionClauseError, fn ->
+        Calendar.ISO.parse_date("20150123", :other)
+      end
+
+      assert_raise FunctionClauseError, fn ->
+        Calendar.ISO.parse_date("2015-01-23", :other)
+      end
     end
   end
 
@@ -219,8 +231,13 @@ defmodule Calendar.ISOTest do
     end
 
     test "errors on other format names" do
-      assert Calendar.ISO.parse_time("235007", :other) == {:error, :invalid_format}
-      assert Calendar.ISO.parse_time("23:50:07", :other) == {:error, :invalid_format}
+      assert_raise FunctionClauseError, fn ->
+        Calendar.ISO.parse_time("235007", :other)
+      end
+
+      assert_raise FunctionClauseError, fn ->
+        Calendar.ISO.parse_time("23:50:07", :other)
+      end
     end
   end
 
@@ -301,11 +318,13 @@ defmodule Calendar.ISOTest do
     end
 
     test "errors on other format names" do
-      assert Calendar.ISO.parse_naive_datetime("20150123 235007.123", :other) ==
-               {:error, :invalid_format}
+      assert_raise FunctionClauseError, fn ->
+        Calendar.ISO.parse_naive_datetime("20150123 235007.123", :other)
+      end
 
-      assert Calendar.ISO.parse_naive_datetime("2015-01-23 23:50:07.123", :other) ==
-               {:error, :invalid_format}
+      assert_raise FunctionClauseError, fn ->
+        Calendar.ISO.parse_naive_datetime("2015-01-23 23:50:07.123", :other)
+      end
     end
   end
 
@@ -386,11 +405,13 @@ defmodule Calendar.ISOTest do
     end
 
     test "errors on other format names" do
-      assert Calendar.ISO.parse_naive_datetime("20150123 235007.123Z", :other) ==
-               {:error, :invalid_format}
+      assert_raise FunctionClauseError, fn ->
+        Calendar.ISO.parse_naive_datetime("20150123 235007.123Z", :other)
+      end
 
-      assert Calendar.ISO.parse_naive_datetime("2015-01-23 23:50:07.123Z", :other) ==
-               {:error, :invalid_format}
+      assert_raise FunctionClauseError, fn ->
+        Calendar.ISO.parse_naive_datetime("2015-01-23 23:50:07.123Z", :other)
+      end
     end
 
     test "errors on mixed basic and extended formats" do

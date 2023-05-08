@@ -56,9 +56,9 @@ defmodule Mix.DepTest do
   end
 
   test "extracts all dependencies from the given project" do
-    Mix.Project.push(DepsApp)
-
     in_fixture("deps_status", fn ->
+      Mix.Project.push(DepsApp)
+
       deps = Mix.Dep.load_on_environment([])
       assert length(deps) == 6
       assert Enum.find(deps, &match?(%Mix.Dep{app: :ok, status: {:ok, _}}, &1))
@@ -71,9 +71,9 @@ defmodule Mix.DepTest do
   end
 
   test "extracts all dependencies paths/scms from the given project" do
-    Mix.Project.push(DepsApp)
-
     in_fixture("deps_status", fn ->
+      Mix.Project.push(DepsApp)
+
       apps = Mix.Project.deps_apps()
       assert length(apps) == 6
       assert :ok in apps
@@ -84,10 +84,10 @@ defmodule Mix.DepTest do
       assert paths[:ok] =~ "deps/ok"
       assert paths[:uncloned] =~ "deps/uncloned"
 
-      paths = Mix.Project.deps_scms()
-      assert map_size(paths) == 6
-      assert paths[:ok] == Mix.SCM.Path
-      assert paths[:uncloned] == Mix.SCM.Git
+      scms = Mix.Project.deps_scms()
+      assert map_size(scms) == 6
+      assert scms[:ok] == Mix.SCM.Path
+      assert scms[:uncloned] == Mix.SCM.Git
     end)
   end
 
@@ -194,7 +194,7 @@ defmodule Mix.DepTest do
     Process.put(:custom_deps_git_repo_opts, manager: :make)
 
     deps = [
-      {:deps_repo, "0.1.0", path: "custom/deps_repo", manager: :rebar},
+      {:deps_repo, "0.1.0", path: "custom/deps_repo", manager: :rebar3},
       {:git_repo, "0.2.0", git: MixTest.Case.fixture_path("git_repo")}
     ]
 
@@ -202,7 +202,7 @@ defmodule Mix.DepTest do
       in_fixture("deps_status", fn ->
         [dep1, dep2] = Mix.Dep.load_on_environment([])
         assert dep1.manager == nil
-        assert dep2.manager == :rebar
+        assert dep2.manager == :rebar3
       end)
     end)
   end
@@ -305,12 +305,60 @@ defmodule Mix.DepTest do
     end)
   end
 
+  test "nested deps with optional dependencies and cousin conflict (reverse order)" do
+    deps = [
+      {:deps_repo2, "0.1.0", path: "custom/deps_repo2"},
+      {:deps_repo1, "0.1.0", path: "custom/deps_repo1"}
+    ]
+
+    with_deps(deps, fn ->
+      in_fixture("deps_status", fn ->
+        File.mkdir_p!("custom/deps_repo1")
+
+        File.write!("custom/deps_repo1/mix.exs", """
+        defmodule DepsRepo1 do
+          use Mix.Project
+
+          def project do
+            [app: :deps_repo1,
+             version: "0.1.0",
+             deps: [{:git_repo, "0.2.0", git: MixTest.Case.fixture_path("git_repo"), optional: true}]]
+          end
+        end
+        """)
+
+        File.mkdir_p!("custom/deps_repo2")
+
+        File.write!("custom/deps_repo2/mix.exs", """
+        defmodule DepsRepo2 do
+          use Mix.Project
+
+          def project do
+            [app: :deps_repo2,
+             version: "0.1.0",
+             deps: [{:git_repo, "0.2.0", path: "somewhere"}]]
+          end
+        end
+        """)
+
+        Mix.Tasks.Deps.run([])
+        assert_received {:mix_shell, :info, ["* deps_repo1" <> _]}
+        assert_received {:mix_shell, :info, [_]}
+        assert_received {:mix_shell, :info, ["* deps_repo2" <> _]}
+        assert_received {:mix_shell, :info, [_]}
+        assert_received {:mix_shell, :info, ["* git_repo" <> _]}
+        assert_received {:mix_shell, :info, [msg]}
+        assert msg =~ "different specs were given for the git_repo"
+      end)
+    end)
+  end
+
   test "deps with system_env set" do
     file_path = tmp_path("load dependency with env vars/dep-test")
     dep_path = tmp_path("rebar_dep")
 
     system_env = [{"FILE_FROM_ENV", file_path}, {"CONTENTS_FROM_ENV", "contents dep test"}]
-    deps = [{:rebar_dep, path: dep_path, app: false, manager: :rebar, system_env: system_env}]
+    deps = [{:rebar_dep, path: dep_path, app: false, manager: :rebar3, system_env: system_env}]
 
     with_deps(deps, fn ->
       in_tmp("load dependency with env vars", fn ->
@@ -477,7 +525,7 @@ defmodule Mix.DepTest do
       Mix.RemoteConverger.register(RaiseRemoteConverger)
 
       in_fixture("deps_cycle", fn ->
-        assert_raise Mix.Error, ~r/cycles in the dependency graph/, fn ->
+        assert_raise Mix.Error, ~r/Could not sort dependencies/, fn ->
           Mix.Tasks.Deps.Get.run([])
         end
 
@@ -488,6 +536,10 @@ defmodule Mix.DepTest do
     Mix.RemoteConverger.register(nil)
   end
 
+  defp sorted_keys(map) do
+    map |> Map.keys() |> Enum.sort()
+  end
+
   test "deps_paths" do
     deps = [
       {:abc_repo, "0.1.0", path: "custom/abc_repo"},
@@ -496,37 +548,84 @@ defmodule Mix.DepTest do
 
     with_deps(deps, fn ->
       in_fixture("deps_status", fn ->
-        assert Enum.map(Mix.Dep.load_on_environment([]), & &1.app) ==
-                 [:git_repo, :abc_repo, :deps_repo]
+        # Both orders below are valid after topological sort
+        assert Enum.map(Mix.Dep.load_on_environment([]), & &1.app) in [
+                 [:git_repo, :abc_repo, :deps_repo],
+                 [:abc_repo, :git_repo, :deps_repo]
+               ]
 
-        assert Map.keys(Mix.Project.deps_paths()) == [:abc_repo, :deps_repo, :git_repo]
+        assert sorted_keys(Mix.Project.deps_paths()) == [:abc_repo, :deps_repo, :git_repo]
 
-        assert Map.keys(Mix.Project.deps_paths(depth: 1)) == [:abc_repo, :deps_repo]
-        assert Map.keys(Mix.Project.deps_paths(depth: 2)) == [:abc_repo, :deps_repo, :git_repo]
-        assert Map.keys(Mix.Project.deps_paths(depth: 3)) == [:abc_repo, :deps_repo, :git_repo]
+        assert sorted_keys(Mix.Project.deps_paths(depth: 1)) == [:abc_repo, :deps_repo]
+        assert sorted_keys(Mix.Project.deps_paths(depth: 2)) == [:abc_repo, :deps_repo, :git_repo]
+        assert sorted_keys(Mix.Project.deps_paths(depth: 3)) == [:abc_repo, :deps_repo, :git_repo]
 
-        assert Map.keys(Mix.Project.deps_paths(parents: [:abc_repo])) == [:abc_repo]
-        assert Map.keys(Mix.Project.deps_paths(parents: [:deps_repo])) == [:deps_repo, :git_repo]
-        assert Map.keys(Mix.Project.deps_paths(parents: [:git_repo])) == [:git_repo]
+        assert sorted_keys(Mix.Project.deps_paths(parents: [:abc_repo])) == [:abc_repo]
 
-        assert Map.keys(Mix.Project.deps_paths(parents: [:abc_repo], depth: 1)) == [:abc_repo]
-        assert Map.keys(Mix.Project.deps_paths(parents: [:deps_repo], depth: 1)) == [:deps_repo]
-        assert Map.keys(Mix.Project.deps_paths(parents: [:git_repo], depth: 1)) == [:git_repo]
+        assert sorted_keys(Mix.Project.deps_paths(parents: [:deps_repo])) == [
+                 :deps_repo,
+                 :git_repo
+               ]
 
-        assert Map.keys(Mix.Project.deps_paths(parents: [:abc_repo], depth: 2)) == [:abc_repo]
-        assert Map.keys(Mix.Project.deps_paths(parents: [:git_repo], depth: 2)) == [:git_repo]
+        assert sorted_keys(Mix.Project.deps_paths(parents: [:git_repo])) == [:git_repo]
 
-        assert Map.keys(Mix.Project.deps_paths(parents: [:deps_repo], depth: 2)) ==
+        assert sorted_keys(Mix.Project.deps_paths(parents: [:abc_repo], depth: 1)) == [:abc_repo]
+
+        assert sorted_keys(Mix.Project.deps_paths(parents: [:deps_repo], depth: 1)) == [
+                 :deps_repo
+               ]
+
+        assert sorted_keys(Mix.Project.deps_paths(parents: [:git_repo], depth: 1)) == [:git_repo]
+
+        assert sorted_keys(Mix.Project.deps_paths(parents: [:abc_repo], depth: 2)) == [:abc_repo]
+        assert sorted_keys(Mix.Project.deps_paths(parents: [:git_repo], depth: 2)) == [:git_repo]
+
+        assert sorted_keys(Mix.Project.deps_paths(parents: [:deps_repo], depth: 2)) ==
                  [:deps_repo, :git_repo]
 
-        assert Map.keys(Mix.Project.deps_paths(parents: [:abc_repo, :deps_repo])) ==
+        assert sorted_keys(Mix.Project.deps_paths(parents: [:abc_repo, :deps_repo])) ==
                  [:abc_repo, :deps_repo, :git_repo]
 
-        assert Map.keys(Mix.Project.deps_paths(parents: [:abc_repo, :deps_repo], depth: 1)) ==
+        assert sorted_keys(Mix.Project.deps_paths(parents: [:abc_repo, :deps_repo], depth: 1)) ==
                  [:abc_repo, :deps_repo]
 
-        assert Map.keys(Mix.Project.deps_paths(parents: [:abc_repo, :deps_repo], depth: 2)) ==
+        assert sorted_keys(Mix.Project.deps_paths(parents: [:abc_repo, :deps_repo], depth: 2)) ==
                  [:abc_repo, :deps_repo, :git_repo]
+      end)
+    end)
+  end
+
+  test "deps_tree" do
+    deps = [
+      {:abc_repo, "0.1.0", path: "custom/abc_repo"},
+      {:deps_repo, "0.1.0", path: "custom/deps_repo"}
+    ]
+
+    with_deps(deps, fn ->
+      in_fixture("deps_status", fn ->
+        # Both orders below are valid after topological sort
+        assert Enum.map(Mix.Dep.load_on_environment([]), & &1.app) in [
+                 [:git_repo, :abc_repo, :deps_repo],
+                 [:abc_repo, :git_repo, :deps_repo]
+               ]
+
+        assert %{abc_repo: [], deps_repo: [:git_repo]} = Mix.Project.deps_tree(depth: 1)
+
+        assert %{abc_repo: [], deps_repo: [:git_repo], git_repo: []} =
+                 Mix.Project.deps_tree(depth: 2)
+
+        assert %{abc_repo: [], deps_repo: [:git_repo], git_repo: []} =
+                 Mix.Project.deps_tree(depth: 3)
+
+        assert %{abc_repo: []} = Mix.Project.deps_tree(parents: [:abc_repo])
+
+        assert %{deps_repo: [:git_repo], git_repo: []} =
+                 Mix.Project.deps_tree(parents: [:deps_repo])
+
+        assert %{git_repo: []} = Mix.Project.deps_tree(parents: [:git_repo])
+
+        assert %{abc_repo: []} = Mix.Project.deps_tree(parents: [:abc_repo], depth: 1)
+        assert %{deps_repo: [:git_repo]} = Mix.Project.deps_tree(parents: [:deps_repo], depth: 1)
       end)
     end)
   end

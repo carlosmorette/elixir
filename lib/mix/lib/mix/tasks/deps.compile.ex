@@ -6,8 +6,9 @@ defmodule Mix.Tasks.Deps.Compile do
   @moduledoc """
   Compiles dependencies.
 
-  By default, compile all dependencies. A list of dependencies
-  can be given to compile multiple dependencies in order.
+  By default, this task attempts to compile all dependencies.
+  A list of dependencies can be given to compile multiple
+  dependencies in order.
 
   This task attempts to detect if the project contains one of
   the following files and act accordingly:
@@ -91,9 +92,6 @@ defmodule Mix.Tasks.Deps.Compile do
             Mix.Dep.make?(dep) ->
               do_make(dep, config)
 
-            dep.manager == :rebar ->
-              do_rebar(dep, config)
-
             dep.manager == :rebar3 ->
               do_rebar3(dep, config)
 
@@ -167,12 +165,7 @@ defmodule Mix.Tasks.Deps.Compile do
       end
 
       try do
-        options = [
-          "--from-mix-deps-compile",
-          "--no-archives-check",
-          "--no-warnings-as-errors"
-        ]
-
+        options = ["--from-mix-deps-compile", "--no-warnings-as-errors", "--no-code-path-pruning"]
         res = Mix.Task.run("compile", options)
         match?({:ok, _}, res)
       catch
@@ -181,8 +174,7 @@ defmodule Mix.Tasks.Deps.Compile do
 
           Mix.shell().error(
             "could not compile dependency #{inspect(app)}, \"mix compile\" failed. " <>
-              "You can recompile this dependency with \"mix deps.compile #{app}\", update it " <>
-              "with \"mix deps.update #{app}\" or clean it with \"mix deps.clean #{app}\""
+              deps_compile_feedback(app)
           )
 
           :erlang.raise(kind, reason, __STACKTRACE__)
@@ -190,47 +182,44 @@ defmodule Mix.Tasks.Deps.Compile do
     end)
   end
 
-  defp do_rebar(dep, config) do
-    lib_path = Path.join(config[:env_path], "lib")
-    cmd = "#{rebar_cmd(dep)} compile skip_deps=true deps_dir=#{inspect(lib_path)}"
-    do_command(dep, config, cmd, false)
-    build_structure(dep, config)
-    true
-  end
-
   defp do_rebar3(%Mix.Dep{opts: opts} = dep, config) do
-    dep_path = opts[:build]
-    config_path = Path.join(dep_path, "mix.rebar.config")
-    lib_path = Path.join(config[:env_path], "lib/*/ebin")
+    dep_path = opts[:dest]
+    build_path = opts[:build]
+    File.mkdir_p!(build_path)
 
-    # REBAR_BARE_COMPILER_OUTPUT_DIR is only honored by rebar3 >= 3.14
+    # For Rebar3, we need to copy the source/ebin to the target/ebin
+    # before we run the command given that REBAR_BARE_COMPILER_OUTPUT_DIR
+    # writes directly to _build.
+    File.cp_r(Path.join(dep_path, "ebin"), Path.join(build_path, "ebin"))
+
+    # Now establish symlinks to the remaining sources
+    for dir <- ~w(include priv src) do
+      Mix.Utils.symlink_or_copy(Path.join(dep_path, dir), Path.join(build_path, dir))
+    end
+
+    # Build the rebar config and setup the command line
+    config_path = Path.join(build_path, "mix.rebar.config")
+    lib_path = Path.join(config[:deps_build_path], "lib/*/ebin")
+    File.write!(config_path, rebar_config(dep))
+
     env = [
-      {"REBAR_BARE_COMPILER_OUTPUT_DIR", dep_path},
+      # REBAR_BARE_COMPILER_OUTPUT_DIR is only honored by rebar3 >= 3.14
+      {"REBAR_BARE_COMPILER_OUTPUT_DIR", build_path},
       {"REBAR_CONFIG", config_path},
       {"REBAR_PROFILE", "prod"},
       {"TERM", "dumb"}
     ]
 
     cmd = "#{rebar_cmd(dep)} bare compile --paths #{lib_path}"
-
-    File.mkdir_p!(dep_path)
-    File.write!(config_path, rebar_config(dep))
-
-    # For Rebar3, we need to build the structure before we run the
-    # command given that REBAR_BARE_COMPILER_OUTPUT_DIR writes directly
-    # to _build.
-    #
-    # TODO: We still symlink ebin, for backwards compatibility, which
-    # partially negates the effects of REBAR_BARE_COMPILER_OUTPUT_DIR
-    # if an ebin diretory exists, so we should consider disabling it in
-    # future releases when rebar3 v3.14+ is reasonable adopted.
-    File.cd!(opts[:dest], fn ->
-      config = Keyword.put(config, :app_path, dep_path)
-      Mix.Project.build_structure(config, symlink_ebin: true)
-    end)
-
     do_command(dep, config, cmd, false, env)
-    Code.prepend_path(Path.join(dep_path, "ebin"))
+
+    # Check if we have any new symlinks after compilation
+    for dir <- ~w(include priv src),
+        File.exists?(Path.join(dep_path, dir)) and not File.exists?(Path.join(build_path, dir)) do
+      Mix.Utils.symlink_or_copy(Path.join(dep_path, dir), Path.join(build_path, dir))
+    end
+
+    Code.prepend_path(Path.join(build_path, "ebin"), cache: true)
     true
   end
 
@@ -251,8 +240,6 @@ defmodule Mix.Tasks.Deps.Compile do
       "Could not find \"#{manager}\", which is needed to build dependency #{inspect(app)}"
     )
 
-    shell.info("I can install a local copy which is just used by Mix")
-
     install_question =
       "Shall I install #{manager}? (if running non-interactively, " <>
         "use \"mix local.rebar --force\")"
@@ -265,8 +252,8 @@ defmodule Mix.Tasks.Deps.Compile do
       Mix.raise(error_message)
     end
 
-    (Mix.Tasks.Local.Rebar.run([]) && Mix.Rebar.local_rebar_cmd(manager)) ||
-      Mix.raise("\"#{manager}\" installation failed")
+    Mix.Tasks.Local.Rebar.run(["--force"])
+    Mix.Rebar.local_rebar_cmd(manager) || Mix.raise("\"#{manager}\" installation failed")
   end
 
   defp do_make(dep, config) do
@@ -311,28 +298,22 @@ defmodule Mix.Tasks.Deps.Compile do
   defp do_command(dep, config, command, print_app?, env \\ []) do
     %Mix.Dep{app: app, system_env: system_env, opts: opts} = dep
 
-    File.cd!(opts[:dest], fn ->
-      env = [{"ERL_LIBS", Path.join(config[:env_path], "lib")} | system_env] ++ env
+    env = [{"ERL_LIBS", Path.join(config[:deps_build_path], "lib")} | system_env] ++ env
 
-      if Mix.shell().cmd(command, env: env, print_app: print_app?) != 0 do
-        Mix.raise(
-          "Could not compile dependency #{inspect(app)}, \"#{command}\" command failed. " <>
-            "You can recompile this dependency with \"mix deps.compile #{app}\", update it " <>
-            "with \"mix deps.update #{app}\" or clean it with \"mix deps.clean #{app}\""
-        )
-      end
-    end)
+    if Mix.shell().cmd(command, env: env, print_app: print_app?, cd: opts[:dest]) != 0 do
+      Mix.raise(
+        "Could not compile dependency #{inspect(app)}, \"#{command}\" command failed. " <>
+          deps_compile_feedback(app)
+      )
+    end
 
     true
   end
 
   defp build_structure(%Mix.Dep{opts: opts}, config) do
-    File.cd!(opts[:dest], fn ->
-      config = Keyword.put(config, :app_path, opts[:build])
-      Mix.Project.build_structure(config, symlink_ebin: true)
-    end)
-
-    Code.prepend_path(Path.join(opts[:build], "ebin"))
+    config = Keyword.put(config, :deps_app_path, opts[:build])
+    Mix.Project.build_structure(config, symlink_ebin: true, source: opts[:dest])
+    Code.prepend_path(Path.join(opts[:build], "ebin"), cache: true)
   end
 
   defp old_elixir_req(config) do
@@ -370,6 +351,17 @@ defmodule Mix.Tasks.Deps.Compile do
       Enum.filter(deps, fn %{scm: scm} -> scm.fetchable? end)
     else
       deps
+    end
+  end
+
+  defp deps_compile_feedback(app) do
+    if Mix.install?() do
+      "Errors may have been logged above. You may run Mix.install/2 to try again or " <>
+        "change the arguments to Mix.install/2 to try another version"
+    else
+      "Errors may have been logged above. You can recompile this dependency with " <>
+        "\"mix deps.compile #{app} --force\", update it with \"mix deps.update #{app}\" or " <>
+        "clean it with \"mix deps.clean #{app}\""
     end
   end
 end

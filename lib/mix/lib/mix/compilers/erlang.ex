@@ -16,10 +16,7 @@ defmodule Mix.Compilers.Erlang do
 
     * `:force` - forces compilation regardless of modification times
 
-    * `:parallel` - if `true` all files will be compiled in parallel,
-      otherwise the given list of source file names will be compiled
-      in parallel, all other files are compiled serially before the
-      parallel files
+    * `:parallel` - a mapset of files to compile in parallel
 
   ## Examples
 
@@ -65,16 +62,6 @@ defmodule Mix.Compilers.Erlang do
     compile(manifest, files, src_ext, opts, callback)
   end
 
-  def compile(manifest, mappings, src_ext, dest_ext, force, callback)
-      when is_boolean(force) or is_nil(force) do
-    IO.warn(
-      "Mix.Compilers.Erlang.compile/6 with a boolean or nil as 5th argument is deprecated, " <>
-        "please pass [force: true] or [] instead"
-    )
-
-    compile(manifest, mappings, src_ext, dest_ext, [force: force], callback)
-  end
-
   @doc """
   Compiles the given `mappings`.
 
@@ -88,10 +75,7 @@ defmodule Mix.Compilers.Erlang do
 
     * `:force` - forces compilation regardless of modification times
 
-    * `:parallel` - if `true` all files will be compiled in parallel,
-      otherwise the given list of source file names will be compiled
-      in parallel, all other files are compiled serially before the
-      parallel files
+    * `:parallel` - a mapset of files to compile in parallel
 
   """
   def compile(manifest, mappings, opts \\ [], callback) do
@@ -105,14 +89,10 @@ defmodule Mix.Compilers.Erlang do
     timestamp = System.os_time(:second)
     entries = read_manifest(manifest)
 
-    # Files to remove are the ones in the manifest
-    # but they no longer have a source
+    # Files to remove are the ones in the manifest but they no longer have a source
     removed =
-      Enum.filter(entries, fn {dest, _} ->
-        not Enum.any?(mappings, fn {_status, _mapping_src, mapping_dest} ->
-          mapping_dest == dest
-        end)
-      end)
+      entries
+      |> Enum.filter(fn {dest, _} -> not List.keymember?(mappings, dest, 2) end)
       |> Enum.map(&elem(&1, 0))
 
     # Remove manifest entries with no source
@@ -125,9 +105,9 @@ defmodule Mix.Compilers.Erlang do
         dest in removed || Enum.any?(stale, fn {_, stale_dest} -> dest == stale_dest end)
       end)
 
-    if opts[:all_warnings], do: show_warnings(entries)
+    if Keyword.get(opts, :all_warnings, true), do: show_warnings(entries)
 
-    if stale == [] && removed == [] do
+    if stale == [] and removed == [] do
       {:noop, manifest_warnings(entries)}
     else
       Mix.Utils.compiling_n(length(stale), ext)
@@ -135,7 +115,8 @@ defmodule Mix.Compilers.Erlang do
 
       # Let's prepend the newly created path so compiled files
       # can be accessed still during compilation (for behaviours
-      # and what not).
+      # and what not). Note we don't want to cache this path as
+      # we will write to it.
       Code.prepend_path(Mix.Project.compile_path())
 
       {parallel, serial} =
@@ -178,19 +159,9 @@ defmodule Mix.Compilers.Erlang do
   @doc """
   Ensures the native OTP application is available.
   """
-  def ensure_application!(app, input) do
-    case Application.ensure_all_started(app) do
-      {:ok, _} ->
-        :ok
-
-      {:error, _} ->
-        Mix.raise(
-          "Could not compile #{inspect(Path.relative_to_cwd(input))} because " <>
-            "the application \"#{app}\" could not be found. This may happen if " <>
-            "your package manager broke Erlang into multiple packages and may " <>
-            "be fixed by installing the missing \"erlang-dev\" and \"erlang-#{app}\" packages"
-        )
-    end
+  def ensure_application!(app, _input) do
+    Mix.ensure_application!(app)
+    {:ok, _} = Application.ensure_all_started(app)
   end
 
   @doc """
@@ -222,6 +193,13 @@ defmodule Mix.Compilers.Erlang do
     else
       Mix.raise(":erlc_paths should be a list of paths, got: #{inspect(erlc_paths)}")
     end
+  end
+
+  @doc """
+  Returns the output paths in the manifest.
+  """
+  def outputs(manifest) do
+    manifest |> read_manifest() |> Enum.map(&elem(&1, 0))
   end
 
   defp extract_targets(src_dir, src_ext, dest_dir, dest_ext, force) do
@@ -304,12 +282,10 @@ defmodule Mix.Compilers.Erlang do
 
   defp to_diagnostics(warnings_or_errors, severity) do
     for {file, issues} <- warnings_or_errors,
-        {line, module, data} <- issues do
-      position = line(line)
-
+        {location, module, data} <- issues do
       %Mix.Task.Compiler.Diagnostic{
         file: Path.absname(file),
-        position: position,
+        position: location_normalize(location),
         message: to_string(module.format_error(data)),
         severity: severity,
         compiler_name: to_string(module),
@@ -321,13 +297,19 @@ defmodule Mix.Compilers.Erlang do
   defp show_warnings(entries) do
     for {_, warnings} <- entries,
         {file, issues} <- warnings,
-        {line, module, message} <- issues do
-      IO.puts("#{file}:#{line(line)}: Warning: #{module.format_error(message)}")
+        {location, module, message} <- issues do
+      IO.puts("#{file}:#{location_to_string(location)} warning: #{module.format_error(message)}")
     end
   end
 
-  defp line({line, _column}) when is_integer(line) and line >= 1, do: line
-  # TODO: remove when we require Erlang/OTP 24
-  defp line(line) when is_integer(line) and line >= 1, do: line
-  defp line(_), do: nil
+  defp location_normalize({line, column})
+       when is_integer(line) and line >= 1 and is_integer(column) and column >= 0,
+       do: {line, column}
+
+  defp location_normalize(line) when is_integer(line) and line >= 1, do: line
+  defp location_normalize(_), do: 0
+
+  defp location_to_string({line, column}), do: "#{line}:#{column}:"
+  defp location_to_string(0), do: ""
+  defp location_to_string(line), do: "#{line}:"
 end

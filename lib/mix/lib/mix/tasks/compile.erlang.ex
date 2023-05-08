@@ -10,23 +10,15 @@ defmodule Mix.Tasks.Compile.Erlang do
   Compiles Erlang source files.
 
   When this task runs, it will first check the modification times of
-  all files to be compiled and if they haven't been
-  changed since the last compilation, it will not compile
-  them. If any of them have changed, it compiles
-  everything.
-
-  For this reason, the task touches your `:compile_path`
-  directory and sets the modification time to the current
-  time and date at the end of each compilation. You can
-  force compilation regardless of modification times by passing
-  the `--force` option.
+  all files to be compiled and if they haven't been changed since the
+  last compilation, it will not compile them. If any of them have changed,
+  it compiles everything.
 
   ## Command line options
 
     * `--force` - forces compilation regardless of modification times
 
-    * `--all-warnings` - prints warnings even from files that do not need to be
-      recompiled
+    * `--no-all-warnings` - prints only warnings from files currently compiled (instead of all)
 
   ## Configuration
 
@@ -44,9 +36,8 @@ defmodule Mix.Tasks.Compile.Erlang do
       compiler. Defaults to `[]`.
 
       For a complete list of options, see `:compile.file/2`.
-
-      The option `:debug_info` is always added to the end of it. You can
-      disable that using:
+      The option `:debug_info` is always added to the end of it.
+      You can disable that using:
 
           erlc_options: [debug_info: false]
 
@@ -96,13 +87,13 @@ defmodule Mix.Tasks.Compile.Erlang do
       :code.purge(module)
       :code.delete(module)
 
-      file = Erlang.to_erl_file(Path.rootname(input, ".erl"))
+      path = Path.rootname(input, ".erl")
+      file = Erlang.to_erl_file(path)
 
       case :compile.file(file, erlc_options) do
-        # TODO: Don't handle {:error, :badarg} when we require Erlang/OTP 24
-        error when error == :error or error == {:error, :badarg} ->
+        :error ->
           message =
-            "Compiling Erlang file #{inspect(file)} failed, probably because of invalid :erlc_options"
+            "Compiling Erlang file #{inspect(path)} failed, probably because of invalid :erlc_options"
 
           Mix.raise(message)
 
@@ -119,6 +110,16 @@ defmodule Mix.Tasks.Compile.Erlang do
   @impl true
   def clean do
     Mix.Compilers.Erlang.clean(manifest())
+  end
+
+  @doc false
+  def modules do
+    for output <- Mix.Compilers.Erlang.outputs(manifest()) do
+      output
+      |> Path.basename()
+      |> Path.rootname()
+      |> String.to_atom()
+    end
   end
 
   ## Internal helpers

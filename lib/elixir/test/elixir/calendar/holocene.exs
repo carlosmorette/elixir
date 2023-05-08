@@ -141,11 +141,17 @@ defmodule Calendar.Holocene do
   defdelegate quarter_of_year(year, month, day), to: Calendar.ISO
 
   @impl true
-  defdelegate year_of_era(year), to: Calendar.ISO
+  defdelegate year_of_era(year, month, day), to: Calendar.ISO
 
   @impl true
   defdelegate day_of_era(year, month, day), to: Calendar.ISO
 
   @impl true
   defdelegate valid_time?(hour, minute, second, microsecond), to: Calendar.ISO
+
+  @impl true
+  defdelegate iso_days_to_beginning_of_day(iso_days), to: Calendar.ISO
+
+  @impl true
+  defdelegate iso_days_to_end_of_day(iso_days), to: Calendar.ISO
 end

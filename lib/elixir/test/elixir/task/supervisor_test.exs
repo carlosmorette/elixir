@@ -146,6 +146,7 @@ defmodule Task.SupervisorTest do
 
     send(task.pid, true)
     assert task.__struct__ == Task
+    assert task.mfa == {__MODULE__, :wait_and_send, 2}
     assert Task.await(task) == :done
   end
 
@@ -160,6 +161,7 @@ defmodule Task.SupervisorTest do
       assert task.__struct__ == Task
       assert is_pid(task.pid)
       assert is_reference(task.ref)
+      assert task.mfa == {:erlang, :apply, 2}
 
       # Refute the link
       {:links, links} = Process.info(self(), :links)
@@ -212,6 +214,7 @@ defmodule Task.SupervisorTest do
 
     send(task.pid, true)
     assert task.__struct__ == Task
+    assert task.mfa == {__MODULE__, :wait_and_send, 2}
     assert Task.await(task) == :done
   end
 
@@ -316,6 +319,23 @@ defmodule Task.SupervisorTest do
   end
 
   describe "await/1" do
+    test "demonitors and unalias on timeout", config do
+      task =
+        Task.Supervisor.async(config[:supervisor], fn ->
+          assert_receive :go
+          :done
+        end)
+
+      assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
+      new_ref = Process.monitor(task.pid)
+      old_ref = task.ref
+
+      send(task.pid, :go)
+      assert_receive {:DOWN, ^new_ref, _, _, _}
+      refute_received {^old_ref, :done}
+      refute_received {:DOWN, ^old_ref, _, _, _}
+    end
+
     test "exits on task throw", config do
       Process.flag(:trap_exit, true)
       task = Task.Supervisor.async(config[:supervisor], fn -> throw(:unknown) end)
@@ -430,6 +450,15 @@ defmodule Task.SupervisorTest do
       |> Stream.run()
 
       assert_receive :done
+    end
+
+    test "consuming from another process", config do
+      parent = self()
+      stream = Task.Supervisor.async_stream(config[:supervisor], [1, 2, 3], &send(parent, &1))
+      Task.start(Stream, :run, [stream])
+      assert_receive 1
+      assert_receive 2
+      assert_receive 3
     end
   end
 

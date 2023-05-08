@@ -62,6 +62,12 @@ defmodule Mix.ProjectTest do
     end
   end
 
+  test "returns mix.exs path" do
+    assert Mix.Project.project_file() == nil
+    Mix.Project.push(SampleProject, "sample")
+    assert Mix.Project.project_file() == "sample"
+  end
+
   test "push and pop projects" do
     refute Mix.Project.get()
     Mix.Project.push(SampleProject, "sample")
@@ -94,11 +100,7 @@ defmodule Mix.ProjectTest do
 
   test "removes private configuration" do
     Mix.Project.push(SampleProject)
-    assert is_nil(Mix.Project.config()[:app_path])
-  end
-
-  test "retrieves configuration even when a project is not set" do
-    assert Mix.Project.config()[:default_task] == "run"
+    assert is_nil(Mix.Project.config()[:deps_app_path])
   end
 
   test "raises an error when trying to retrieve the current project but none is set" do
@@ -109,16 +111,16 @@ defmodule Mix.ProjectTest do
 
   test "builds the project structure" do
     in_fixture("archive", fn ->
-      config = [app_path: Path.expand("_build/archive")]
+      config = [deps_app_path: Path.expand("_build/archive")]
       assert Mix.Project.build_structure(config) == :ok
       assert File.dir?("_build/archive/ebin")
-      assert_proj_dir_linked_or_copied("_build/archive/priv", "priv", '../../priv')
+      assert_proj_dir_linked_or_copied("_build/archive/priv", "priv", ~c"../../priv")
     end)
   end
 
   test "builds the project structure without symlinks" do
     in_fixture("archive", fn ->
-      config = [app_path: Path.expand("_build/archive"), build_embedded: true]
+      config = [deps_app_path: Path.expand("_build/archive"), build_embedded: true]
       assert Mix.Project.build_structure(config) == :ok
       assert File.dir?("_build/archive/ebin")
       assert {:error, _} = :file.read_link("_build/archive/ebin")
@@ -127,17 +129,17 @@ defmodule Mix.ProjectTest do
 
   test "builds the project structure with symlinks" do
     in_fixture("archive", fn ->
-      config = [app_path: Path.expand("_build/archive")]
+      config = [deps_app_path: Path.expand("_build/archive")]
       File.mkdir_p!("include")
 
       assert Mix.Project.build_structure(config, symlink_ebin: true) == :ok
-      assert_proj_dir_linked_or_copied("_build/archive/ebin", "ebin", '../../ebin')
-      assert_proj_dir_linked_or_copied("_build/archive/priv", "priv", '../../priv')
-      assert_proj_dir_linked_or_copied("_build/archive/include", "include", '../../include')
+      assert_proj_dir_linked_or_copied("_build/archive/ebin", "ebin", ~c"../../ebin")
+      assert_proj_dir_linked_or_copied("_build/archive/priv", "priv", ~c"../../priv")
+      assert_proj_dir_linked_or_copied("_build/archive/include", "include", ~c"../../include")
 
       assert Mix.Project.build_structure(config) == :ok
       assert File.dir?("_build/archive/ebin")
-      assert_proj_dir_linked_or_copied("_build/archive/priv", "priv", '../../priv')
+      assert_proj_dir_linked_or_copied("_build/archive/priv", "priv", ~c"../../priv")
     end)
   end
 
@@ -177,7 +179,7 @@ defmodule Mix.ProjectTest do
           # relative symlink on Windows are broken, see symlink_or_copy/2
           {:win32, _} ->
             assert path ==
-                     [source, '..', symlink_path]
+                     [source, ~c"..", symlink_path]
                      |> Path.join()
                      |> Path.expand()
                      |> String.to_charlist()

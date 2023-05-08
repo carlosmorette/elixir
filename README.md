@@ -1,6 +1,7 @@
-<img src="https://github.com/elixir-lang/elixir-lang.github.com/raw/master/images/logo/logo.png" width="200" alt="Elixir">
+<img src="https://github.com/elixir-lang/elixir-lang.github.com/raw/main/images/logo/logo.png#gh-light-mode-only" width="200" alt="Elixir">
+<img src="https://github.com/elixir-lang/elixir-lang.github.com/raw/main/images/logo/logo-dark.png#gh-dark-mode-only" width="200" alt="Elixir">
 
-[![CI](https://github.com/elixir-lang/elixir/workflows/CI/badge.svg?branch=master)](https://github.com/elixir-lang/elixir/actions?query=branch%3Amaster+workflow%3ACI) [![Build status](https://api.cirrus-ci.com/github/elixir-lang/elixir.svg?branch=master)](https://cirrus-ci.com/github/elixir-lang/elixir)
+[![CI](https://github.com/elixir-lang/elixir/workflows/CI/badge.svg?branch=main)](https://github.com/elixir-lang/elixir/actions?query=branch%3Amain+workflow%3ACI)
 
 Elixir is a dynamic, functional language designed for building scalable
 and maintainable applications.
@@ -11,17 +12,63 @@ For more about Elixir, installation and documentation,
 ## Policies
 
 New releases are announced in the [announcement mailing list][8].
-You can subscribe by sending an email to elixir-lang-ann+subscribe@googlegroups.com and replying to the confirmation email.
+You can subscribe by sending an email to elixir-lang-ann+subscribe@googlegroups.com
+and replying to the confirmation email.
 
-All security releases [will be tagged with `[security]`][10]. For more information, please read our [Security Policy][9].
+All security releases [will be tagged with `[security]`][10]. For more
+information, please read our [Security Policy][9].
 
-All interactions in our official communication channels follow our [Code of Conduct][1].
+All interactions in our official communication channels follow our
+[Code of Conduct][1].
 
 ## Bug reports
 
 For reporting bugs, [visit our issue tracker][2] and follow the steps
 for reporting a new issue. **Please disclose security vulnerabilities
 privately at elixir-security@googlegroups.com**.
+
+## Issues tracker management
+
+All currently open bugs related to the Elixir repository are listed
+in the issues tracker. The Elixir team uses the issues tracker to focus
+on *actionable items*, including planned enhancements in the short- and
+medium-term. We also do our best to label entries for clarity and to ease
+collaboration.
+
+Our *actionable item policy* has some important consequences, such as:
+
+  * Proposing new features as well as request for support, help, and
+    guidance must be done in their own spaces, detailed next.
+
+  * Issues where we have identified to be outside of Elixir scope,
+    such as a bug upstream, will be closed (and requested to be moved
+    elsewhere if appropriate).
+
+  * We actively close unrelated and non-actionable issues to keep the
+    issues tracker tidy. However, we may get things wrong from time to
+    time, so we are glad to revisit issues and reopen if necessary.
+
+Keep the tone positive and be kind! For more information, see the
+[Code of Conduct][1].
+
+### Proposing new features
+
+For proposing new features, please start a discussion in the
+[Elixir Core mailing list][3]. Keep in mind that it is your responsibility
+to argue and explain why a feature is useful and how it will impact the
+codebase and the community. The [language development history and outline
+are described on our website](https://elixir-lang.org/development.html).
+
+Once a proposal is accepted, it will be added to [the issue tracker][2].
+Features and bug fixes that have already been merged and will be included
+in the next release are then "closed" and added to the [changelog][7].
+
+### Discussions, support, and help
+
+For general discussions, support, and help, please use many of the community
+spaces [listed on the sidebar of the Elixir website](https://elixir-lang.org/),
+such as forums, chat platforms, etc, where the wider community will be available
+to help you.
 
 ## Compiling from source
 
@@ -49,22 +96,6 @@ If Elixir fails to build (specifically when pulling in a new version via
 `git`), be sure to remove any previous build artifacts by running
 `make clean`, then `make test`.
 
-## Proposing new features
-
-For proposing new features, please start a discussion in the
-[Elixir Core mailing list][3]. Keep in mind that it is your responsibility
-to argue and explain why a feature is useful and how it will impact the
-codebase and the community.
-
-Once a proposal is accepted, it will be added to [the issue tracker][2].
-The issue tracker focuses on *actionable items* and it holds a list of
-upcoming enhancements and pending bugs. All entries in the tracker are
-tagged for clarity and to ease collaboration.
-
-Features and bug fixes that have already been merged and will be included
-in the next release are marked as "closed" in the issue tracker and are
-added to the [changelog][7].
-
 ## Contributing
 
 We welcome everyone to contribute to Elixir. To do so, there are a few
@@ -85,7 +116,7 @@ in applications inside the `lib` folder:
 
 You can run all tests in the root directory with `make test` and you can
 also run tests for a specific framework `make test_#{APPLICATION}`, for example,
-`make test_ex_unit`. If you just changed something in the Elixir's standard
+`make test_ex_unit`. If you just changed something in Elixir's standard
 library, you can run only that portion through `make test_stdlib`.
 
 If you are changing just one file, you can choose to compile and run tests only
@@ -96,6 +127,12 @@ are changing the String module, you can compile it and run its tests as:
 bin/elixirc lib/elixir/lib/string.ex -o lib/elixir/ebin
 bin/elixir lib/elixir/test/elixir/string_test.exs
 ```
+
+You can also use the `LINE` env var to run a single test:
+
+```sh
+LINE=123 bin/elixir lib/elixir/test/elixir/string_test.exs
+````
 
 To recompile (including Erlang modules):
 
@@ -135,12 +172,12 @@ We outline our process below to clarify the roles of everyone involved.
 
 All pull requests must be approved by two committers before being merged into
 the repository. If any changes are necessary, the team will leave appropriate
-comments requesting changes to the code. Unfortunately we cannot guarantee a
+comments requesting changes to the code. Unfortunately, we cannot guarantee a
 pull request will be merged, even when modifications are requested, as the Elixir
 team will re-evaluate the contribution as it changes.
 
 Committers may also push style changes directly to your branch. If you would
-rather manage all changes yourself, you can disable "Allow edits from maintainers"
+rather manage all changes yourself, you can disable the "Allow edits from maintainers"
 feature when submitting your pull request.
 
 The Elixir team may optionally assign someone to review a pull request.
@@ -159,8 +196,8 @@ to be installed and built alongside Elixir:
 
 ```sh
 # After cloning and compiling Elixir, in its parent directory:
-git clone git://github.com/elixir-lang/ex_doc.git
-cd ex_doc && ../elixir/bin/mix do deps.get, compile
+git clone https://github.com/elixir-lang/ex_doc.git
+cd ex_doc && ../elixir/bin/mix do deps.get + compile
 ```
 
 Now go back to Elixir's root directory and run:

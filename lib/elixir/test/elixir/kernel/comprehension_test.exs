@@ -98,8 +98,51 @@ defmodule Kernel.ComprehensionTest do
     assert Process.get(:into_halt)
   end
 
+  test "nested for comprehensions with unique values" do
+    assert for(x <- [1, 1, 2], uniq: true, do: for(y <- [3, 3], uniq: true, do: x * y)) == [
+             [3],
+             [6]
+           ]
+
+    assert for(<<x <- "abcabc">>,
+             uniq: true,
+             into: "",
+             do: for(<<y <- "zz">>, uniq: true, into: "", do: to_bin(x) <> to_bin(y))
+           ) == "azbzcz"
+  end
+
   test "for comprehensions with nilly filters" do
     assert for(x <- 1..3, nilly(), do: x * 2) == []
+  end
+
+  test "for comprehensions with unique option where value is not used" do
+    assert capture_io(:stderr, fn ->
+             assert capture_io(fn ->
+                      Code.eval_quoted(
+                        quote do
+                          for x <- [1, 2, 1, 2], uniq: true, do: IO.puts(x)
+                          nil
+                        end
+                      )
+                    end) ==
+                      "1\n2\n1\n2\n"
+           end) =~
+             "the :uniq option has no effect since the result of the for comprehension is not used"
+  end
+
+  test "for comprehensions with unique option where value is assigned to _" do
+    assert capture_io(:stderr, fn ->
+             assert capture_io(fn ->
+                      Code.eval_quoted(
+                        quote do
+                          _ = for x <- [1, 2, 1, 2], uniq: true, do: IO.puts(x)
+                          nil
+                        end
+                      )
+                    end) ==
+                      "1\n2\n1\n2\n"
+           end) =~
+             "the :uniq option has no effect since the result of the for comprehension is not used"
   end
 
   test "for comprehensions with errors on filters" do
@@ -250,7 +293,7 @@ defmodule Kernel.ComprehensionTest do
         acc -> Map.update(acc, x, [y], &[y | &1])
       end
 
-    assert acc == %{1 => 'olleh', 3 => 'olleh'}
+    assert acc == %{1 => ~c"olleh", 3 => ~c"olleh"}
   end
 
   test "for comprehensions with matched reduce" do
@@ -358,7 +401,7 @@ defmodule Kernel.ComprehensionTest do
         acc -> Map.update(acc, x, [y], &[y | &1])
       end
 
-    assert acc == %{1 => 'olleh', 3 => 'olleh'}
+    assert acc == %{1 => ~c"olleh", 3 => ~c"olleh"}
   end
 
   ## Binary generators (inlined by the compiler)
@@ -483,6 +526,6 @@ defmodule Kernel.ComprehensionTest do
         acc -> Map.update(acc, x, [y], &[y | &1])
       end
 
-    assert acc == %{1 => 'olleh', 3 => 'olleh'}
+    assert acc == %{1 => ~c"olleh", 3 => ~c"olleh"}
   end
 end

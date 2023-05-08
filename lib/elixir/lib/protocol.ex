@@ -43,6 +43,13 @@ defmodule Protocol do
         def size(tuple), do: tuple_size(tuple)
       end
 
+  Finally, we can use the `Size` protocol to call the correct implementation:
+
+      Size.size({1, 2})
+      # => 2
+      Size.size(%{key: :value})
+      # => 1
+
   Note that we didn't implement it for lists as we don't have the
   `size` information on lists, rather its value needs to be
   computed with `length`.
@@ -244,8 +251,16 @@ defmodule Protocol do
         ...
       end
 
-  Although doing so is not recommended as it may affect your test suite
-  performance.
+  If you are using `Mix.install/2`, you can do by passing the `consolidate_protocols`
+  option:
+
+      Mix.install(
+        deps,
+        consolidate_protocols: false
+      )
+
+  Although doing so is not recommended as it may affect the performance of
+  your code.
 
   Finally, note all protocols are compiled with `debug_info` set to `true`,
   regardless of the option set by the `elixirc` compiler. The debug info is
@@ -441,7 +456,7 @@ defmodule Protocol do
   """
   @spec extract_protocols([charlist | String.t()]) :: [atom]
   def extract_protocols(paths) do
-    extract_matching_by_attribute(paths, 'Elixir.', fn module, attributes ->
+    extract_matching_by_attribute(paths, [?E, ?l, ?i, ?x, ?i, ?r, ?.], fn module, attributes ->
       case attributes[:__protocol__] do
         [fallback_to_any: _] -> module
         _ -> nil
@@ -470,7 +485,7 @@ defmodule Protocol do
   """
   @spec extract_impls(module, [charlist | String.t()]) :: [atom]
   def extract_impls(protocol, paths) when is_atom(protocol) do
-    prefix = Atom.to_charlist(protocol) ++ '.'
+    prefix = Atom.to_charlist(protocol) ++ [?.]
 
     extract_matching_by_attribute(paths, prefix, fn _mod, attributes ->
       case attributes[:__impl__] do
@@ -496,7 +511,7 @@ defmodule Protocol do
   end
 
   defp extract_from_file(path, file, prefix, callback) do
-    if :lists.prefix(prefix, file) and :filename.extension(file) == '.beam' do
+    if :lists.prefix(prefix, file) and :filename.extension(file) == [?., ?b, ?e, ?a, ?m] do
       extract_from_beam(:filename.join(path, file), callback)
     end
   end
@@ -540,7 +555,7 @@ defmodule Protocol do
 
   This function does not load the protocol at any point
   nor loads the new bytecode for the compiled module.
-  However each implementation must be available and
+  However, each implementation must be available and
   it will be loaded.
   """
   @spec consolidate(module, [module]) ::
@@ -548,13 +563,16 @@ defmodule Protocol do
           | {:error, :not_a_protocol}
           | {:error, :no_beam_info}
   def consolidate(protocol, types) when is_atom(protocol) do
+    # Ensure the types are sorted so the compiled beam is deterministic
+    types = Enum.sort(types)
+
     with {:ok, ast_info, specs, compile_info} <- beam_protocol(protocol),
          {:ok, definitions} <- change_debug_info(protocol, ast_info, types),
          do: compile(definitions, specs, compile_info)
   end
 
   defp beam_protocol(protocol) do
-    chunk_ids = [:debug_info, 'Docs', 'ExCk']
+    chunk_ids = [:debug_info, [?D, ?o, ?c, ?s], [?E, ?x, ?C, ?k]]
     opts = [:allow_missing_chunks]
 
     case :beam_lib.chunks(beam_file(protocol), chunk_ids, opts) do
@@ -720,14 +738,14 @@ defmodule Protocol do
 
   defp callback_ast_to_fa({kind, {:"::", meta, [{name, _, args}, _return]}, _pos})
        when kind in [:callback, :macrocallback] do
-    [{{name, length(args)}, meta}]
+    [{{name, length(List.wrap(args))}, meta}]
   end
 
   defp callback_ast_to_fa(
          {kind, {:when, _, [{:"::", meta, [{name, _, args}, _return]}, _vars]}, _pos}
        )
        when kind in [:callback, :macrocallback] do
-    [{{name, length(args)}, meta}]
+    [{{name, length(List.wrap(args))}, meta}]
   end
 
   defp callback_ast_to_fa({kind, _, _pos}) when kind in [:callback, :macrocallback] do
@@ -744,7 +762,7 @@ defmodule Protocol do
     do: :maps.get(fa, metas, [])[:line]
 
   defp warn(message, env, nil) do
-    IO.warn(message, Macro.Env.stacktrace(env))
+    IO.warn(message, env)
   end
 
   defp warn(message, env, line) when is_integer(line) do
@@ -752,13 +770,20 @@ defmodule Protocol do
     IO.warn(message, stacktrace)
   end
 
-  # TODO: Convert the following warnings into errors future Elixir versions
   def __before_compile__(env) do
-    # Callbacks
     callback_metas = callback_metas(env.module, :callback)
     callbacks = :maps.keys(callback_metas)
     functions = Module.get_attribute(env.module, :__functions__)
 
+    if functions == [] do
+      warn(
+        "protocols must define at least one function, but none was defined",
+        env,
+        nil
+      )
+    end
+
+    # TODO: Convert the following warnings into errors in future Elixir versions
     :lists.map(
       fn {name, arity} = fa ->
         warn(
@@ -788,7 +813,7 @@ defmodule Protocol do
     # Optional Callbacks
     optional_callbacks = Module.get_attribute(env.module, :optional_callbacks)
 
-    if length(optional_callbacks) > 0 do
+    if optional_callbacks != [] do
       warn(
         "cannot define @optional_callbacks inside protocol, all of the protocol definitions are required",
         env,
@@ -877,6 +902,9 @@ defmodule Protocol do
       @compile {:inline, struct_impl_for: 1}
 
       unless Module.defines_type?(__MODULE__, {:t, 0}) do
+        @typedoc """
+        All the types that implement this protocol.
+        """
         @type t :: term
       end
 
@@ -904,26 +932,41 @@ defmodule Protocol do
     do: [:lists.foldl(&{:|, [], [&1, &2]}, head, tail), quote(do: ...)]
 
   @doc false
-  def __impl__(protocol, opts) do
-    do_defimpl(protocol, :lists.keysort(1, opts))
+  def __impl__(protocol, opts, do_block, env) do
+    opts = Keyword.merge(opts, do_block)
+
+    {for, opts} =
+      Keyword.pop_lazy(opts, :for, fn ->
+        env.module ||
+          raise ArgumentError, "defimpl/3 expects a :for option when declared outside a module"
+      end)
+
+    for =
+      Macro.expand_literals(for, %{env | module: env.module || Elixir, function: {:__impl__, 1}})
+
+    case opts do
+      [] -> raise ArgumentError, "defimpl expects a do-end block"
+      [do: block] -> __impl__(protocol, for, block)
+      _ -> raise ArgumentError, "unknown options given to defimpl, got: #{Macro.to_string(opts)}"
+    end
   end
 
-  defp do_defimpl(protocol, do: block, for: for) when is_list(for) do
-    for f <- for, do: do_defimpl(protocol, do: block, for: f)
+  defp __impl__(protocol, for, block) when is_list(for) do
+    for f <- for, do: __impl__(protocol, f, block)
   end
 
-  defp do_defimpl(protocol, do: block, for: for) do
+  defp __impl__(protocol, for, block) do
     # Unquote the implementation just later
     # when all variables will already be injected
     # into the module body.
     impl =
       quote unquote: false do
         @doc false
-        @spec __impl__(:for) :: unquote(for)
         @spec __impl__(:target) :: __MODULE__
+        @spec __impl__(:for) :: unquote(for)
         @spec __impl__(:protocol) :: unquote(protocol)
-        def __impl__(:for), do: unquote(for)
         def __impl__(:target), do: __MODULE__
+        def __impl__(:for), do: unquote(for)
         def __impl__(:protocol), do: unquote(protocol)
       end
 
@@ -940,12 +983,12 @@ defmodule Protocol do
         @protocol protocol
         @for for
 
-        unquote(block)
-
+        res = unquote(block)
         Module.register_attribute(__MODULE__, :__impl__, persist: true)
         @__impl__ [protocol: @protocol, for: @for]
 
         unquote(impl)
+        res
       end
     end
   end
@@ -1003,14 +1046,15 @@ defmodule Protocol do
 
   @doc false
   def __ensure_defimpl__(protocol, for, env) do
-    if Protocol.consolidated?(protocol) do
+    if not Code.get_compiler_option(:ignore_already_consolidated) and
+         Protocol.consolidated?(protocol) do
       message =
         "the #{inspect(protocol)} protocol has already been consolidated, an " <>
           "implementation for #{inspect(for)} has no effect. If you want to " <>
           "implement protocols after compilation or during tests, check the " <>
           "\"Consolidation\" section in the Protocol module documentation"
 
-      IO.warn(message, Macro.Env.stacktrace(env))
+      IO.warn(message, env)
     end
 
     :ok

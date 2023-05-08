@@ -1,42 +1,41 @@
 -module(elixir_erl_for).
--export([translate/4]).
+-export([translate/3]).
 -include("elixir.hrl").
 
-translate(Meta, Args, Return, S) ->
+translate(Meta, Args, S) ->
   {Cases, [{do, Expr} | Opts]} = elixir_utils:split_last(Args),
 
   case lists:keyfind(reduce, 1, Opts) of
     {reduce, Reduce} -> translate_reduce(Meta, Cases, Expr, Reduce, S);
-    false -> translate_into(Meta, Cases, Expr, Opts, Return, S)
+    false -> translate_into(Meta, Cases, Expr, Opts, S)
   end.
 
 translate_reduce(Meta, Cases, Expr, Reduce, S) ->
   Ann = ?ann(Meta),
-  {TReduce, SR} = elixir_erl_pass:translate(Reduce, S),
+  {TReduce, SR} = elixir_erl_pass:translate(Reduce, Ann, S),
   {TCases, SC} = translate_gen(Meta, Cases, [], SR),
   CaseExpr = {'case', Meta, [ok, [{do, Expr}]]},
-  {TExpr, SE} = elixir_erl_pass:translate(CaseExpr, SC),
+  {TExpr, SE} = elixir_erl_pass:translate(CaseExpr, Ann, SC),
 
   InnerFun = fun
     ({'case', CaseAnn, _, CaseBlock}, InnerAcc) -> {'case', CaseAnn, InnerAcc, CaseBlock}
   end,
 
-  {build_reduce(Ann, TCases, InnerFun, TExpr, TReduce, false, SE), SE}.
+  build_reduce(Ann, TCases, InnerFun, TExpr, TReduce, false, SE).
 
-translate_into(Meta, Cases, Expr, Opts, Return, S) ->
+translate_into(Meta, Cases, Expr, Opts, S) ->
   Ann = ?ann(Meta),
 
   {TInto, SI} =
     case lists:keyfind(into, 1, Opts) of
-      {into, Into} -> elixir_erl_pass:translate(Into, S);
-      false when Return -> {{nil, Ann}, S};
+      {into, Into} -> elixir_erl_pass:translate(Into, Ann, S);
       false -> {false, S}
     end,
 
   TUniq = lists:keyfind(uniq, 1, Opts) == {uniq, true},
 
   {TCases, SC} = translate_gen(Meta, Cases, [], SI),
-  {TExpr, SE}  = elixir_erl_pass:translate(wrap_expr_if_unused(Expr, TInto), SC),
+  {TExpr, SE}  = elixir_erl_pass:translate(wrap_expr_if_unused(Expr, TInto), Ann, SC),
 
   case inline_or_into(TInto) of
     inline -> build_inline(Ann, TCases, TExpr, TInto, TUniq, SE);
@@ -59,17 +58,23 @@ translate_gen(ForMeta, [{'<<>>', _, [{'<-', Meta, [Left, Right]}]} | T], Acc, S)
 translate_gen(_ForMeta, [], Acc, S) ->
   {lists:reverse(Acc), S}.
 
-translate_gen(_Meta, Left, Right, T, S) ->
-  {TRight, SR} = elixir_erl_pass:translate(Right, S),
+translate_gen(Meta, Left, Right, T, S) ->
+  Ann = ?ann(Meta),
+  {TRight, SR} = elixir_erl_pass:translate(Right, Ann, S),
   {LeftArgs, LeftGuards} = elixir_utils:extract_guards(Left),
-  {TLeft, SL} = elixir_erl_clauses:match(fun elixir_erl_pass:translate/2, LeftArgs,
+  {TLeft, SL} = elixir_erl_clauses:match(Ann, fun elixir_erl_pass:translate/3, LeftArgs,
                                          SR#elixir_erl{extra=pin_guard}),
 
-  TLeftGuards = elixir_erl_clauses:guards(LeftGuards, [], SL),
+  TLeftGuards = elixir_erl_clauses:guards(Ann, LeftGuards, [], SL),
   ExtraGuards = [{nil, X} || X <- SL#elixir_erl.extra_guards],
-  SF = SL#elixir_erl{extra=S#elixir_erl.extra, extra_guards=[]},
+  {Filters, TT} = collect_filters(T, []),
 
-  {TT, {TFilters, TS}} = translate_filters(T, SF),
+  {TFilters, TS} =
+    lists:mapfoldr(
+      fun(F, SF) -> translate_filter(F, Ann, SF) end,
+      SL#elixir_erl{extra=S#elixir_erl.extra, extra_guards=[]},
+      Filters
+    ),
 
   %% The list of guards is kept in reverse order
   Guards = TFilters ++ translate_guards(TLeftGuards) ++ ExtraGuards,
@@ -82,12 +87,8 @@ translate_guards([[Guards]]) ->
 translate_guards([[Left], [Right] | Rest]) ->
   translate_guards([[{op, element(2, Left), 'orelse', Left, Right}] | Rest]).
 
-translate_filters(T, S) ->
-  {Filters, Rest} = collect_filters(T, []),
-  {Rest, lists:mapfoldr(fun translate_filter/2, S, Filters)}.
-
-translate_filter(Filter, S) ->
-  {TFilter, TS} = elixir_erl_pass:translate(Filter, S),
+translate_filter(Filter, Ann, S) ->
+  {TFilter, TS} = elixir_erl_pass:translate(Filter, Ann, S),
   case elixir_utils:returns_boolean(Filter) of
     true ->
       {{nil, TFilter}, TS};
@@ -113,11 +114,20 @@ build_inline(Ann, Clauses, Expr, Into, Uniq, S) ->
 
 build_inline_each(Ann, Clauses, Expr, false, Uniq, S) ->
   InnerFun = fun(InnerExpr, _InnerAcc) -> InnerExpr end,
-  {build_reduce(Ann, Clauses, InnerFun, Expr, {nil, Ann}, Uniq, S), S};
+  build_reduce(Ann, Clauses, InnerFun, Expr, {nil, Ann}, Uniq, S);
+build_inline_each(Ann, [{enum, _, Left = {var, _, _}, Right, [] = _Filters}], Expr, {nil, _} = _Into, false, S) ->
+  Clauses = [{clause, Ann, [Left], [], [Expr]}],
+  Args = [Right, {'fun', Ann, {clauses, Clauses}}],
+  {?remote(Ann, 'Elixir.Enum', map, Args), S};
+build_inline_each(Ann, [{enum, _, Left = {var, _, _}, Right, [] = _Filters}], Expr, {map, _, []} = _Into, false, S) ->
+  Clauses = [{clause, Ann, [Left], [], [Expr]}],
+  Args = [Right, {'fun', Ann, {clauses, Clauses}}],
+  List = ?remote(Ann, 'Elixir.Enum', map, Args),
+  {?remote(Ann, maps, from_list, [List]), S};
 build_inline_each(Ann, Clauses, Expr, {nil, _} = Into, Uniq, S) ->
   InnerFun = fun(InnerExpr, InnerAcc) -> {cons, Ann, InnerExpr, InnerAcc} end,
-  ReduceExpr = build_reduce(Ann, Clauses, InnerFun, Expr, Into, Uniq, S),
-  {?remote(Ann, lists, reverse, [ReduceExpr]), S};
+  {ReduceExpr, SR} = build_reduce(Ann, Clauses, InnerFun, Expr, Into, Uniq, S),
+  {?remote(Ann, lists, reverse, [ReduceExpr]), SR};
 build_inline_each(Ann, Clauses, Expr, {bin, _, []}, Uniq, S) ->
   {InnerValue, SV} = build_var(Ann, S),
   Generated = erl_anno:set_generated(true, Ann),
@@ -136,8 +146,8 @@ build_inline_each(Ann, Clauses, Expr, {bin, _, []}, Uniq, S) ->
     ]}
   end,
 
-  ReduceExpr = build_reduce(Ann, Clauses, InnerFun, Expr, {nil, Ann}, Uniq, SV),
-  {?remote(Ann, erlang, list_to_bitstring, [ReduceExpr]), SV}.
+  {ReduceExpr, SR} = build_reduce(Ann, Clauses, InnerFun, Expr, {nil, Ann}, Uniq, SV),
+  {?remote(Ann, erlang, list_to_bitstring, [ReduceExpr]), SR}.
 
 build_into(Ann, Clauses, Expr, {map, _, []}, Uniq, S) ->
   {ReduceExpr, SR} = build_inline_each(Ann, Clauses, Expr, {nil, Ann}, Uniq, S),
@@ -159,7 +169,7 @@ build_into(Ann, Clauses, Expr, Into, Uniq, S) ->
     ?remote(Ann, 'Elixir.Collectable', into, [Into])
   },
 
-  IntoReduceExpr = build_reduce(Ann, Clauses, InnerFun, Expr, Acc, Uniq, SD),
+  {IntoReduceExpr, SN} = build_reduce(Ann, Clauses, InnerFun, Expr, Acc, Uniq, SD),
 
   TryExpr =
     {'try', Ann,
@@ -171,7 +181,7 @@ build_into(Ann, Clauses, Expr, Into, Uniq, S) ->
       [stacktrace_clause(Ann, Fun, Acc, Kind, Reason, Stack)],
       []},
 
-  {{block, Ann, [MatchExpr, TryExpr]}, SD}.
+  {{block, Ann, [MatchExpr, TryExpr]}, SN}.
 
 stacktrace_clause(Ann, Fun, Acc, Kind, Reason, Stack) ->
   {clause, Ann,
@@ -184,7 +194,7 @@ stacktrace_clause(Ann, Fun, Acc, Kind, Reason, Stack) ->
 
 build_reduce(Ann, Clauses, InnerFun, Expr, Into, false, S) ->
   {Acc, SA} = build_var(Ann, S),
-  build_reduce_each(Clauses, InnerFun(Expr, Acc), Into, Acc, SA);
+  {build_reduce_each(Clauses, InnerFun(Expr, Acc), Into, Acc, SA), SA};
 build_reduce(Ann, Clauses, InnerFun, Expr, Into, true, S) ->
   %% Those variables are used only inside the anonymous function
   %% so we don't need to worry about returning the scope.
@@ -207,7 +217,7 @@ build_reduce(Ann, Clauses, InnerFun, Expr, Into, true, S) ->
   ]},
 
   EnumReduceCall = build_reduce_each(Clauses, InnerExpr, NewInto, Acc, SU),
-  ?remote(Ann, erlang, element, [{integer, Ann, 1}, EnumReduceCall]).
+  {?remote(Ann, erlang, element, [{integer, Ann, 1}, EnumReduceCall]), SU}.
 
 build_reduce_each([{enum, Meta, Left, Right, Filters} | T], Expr, Arg, Acc, S) ->
   Ann = ?ann(Meta),
@@ -335,10 +345,10 @@ join_filter(Ann, {nil, Filter}, True, False) ->
     {clause, Ann, [{atom, Ann, false}], [], [False]}
   ]};
 join_filter(Ann, {Var, Filter}, True, False) ->
-  Guards = [
-    [{op, Ann, '==', Var, {atom, Ann, false}}],
-    [{op, Ann, '==', Var, {atom, Ann, nil}}]
-  ],
+  Guards = [[{op, Ann, 'orelse',
+    {op, Ann, '==', Var, {atom, Ann, false}},
+    {op, Ann, '==', Var, {atom, Ann, nil}}
+  }]],
 
   {'case', Ann, Filter, [
     {clause, Ann, [Var], Guards, [False]},

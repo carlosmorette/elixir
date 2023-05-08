@@ -107,6 +107,74 @@ defmodule ListTest do
     assert List.keysort([a: 4, c: 1, b: 2], 0) == [a: 4, b: 2, c: 1]
   end
 
+  test "keysort/3 with stable sorting" do
+    collection = [
+      {2, 4},
+      {1, 5},
+      {2, 2},
+      {3, 1},
+      {4, 3}
+    ]
+
+    # Stable sorting
+    assert List.keysort(collection, 0) == [
+             {1, 5},
+             {2, 4},
+             {2, 2},
+             {3, 1},
+             {4, 3}
+           ]
+
+    assert List.keysort(collection, 0) ==
+             List.keysort(collection, 0, :asc)
+
+    assert List.keysort(collection, 0, &</2) == [
+             {1, 5},
+             {2, 2},
+             {2, 4},
+             {3, 1},
+             {4, 3}
+           ]
+
+    assert List.keysort(collection, 0, :desc) == [
+             {4, 3},
+             {3, 1},
+             {2, 4},
+             {2, 2},
+             {1, 5}
+           ]
+  end
+
+  test "keysort/3 with module and stable sorting" do
+    collection = [
+      {~D[2010-01-02], 4},
+      {~D[2010-01-01], 5},
+      {~D[2010-01-02], 2},
+      {~D[2010-01-03], 1},
+      {~D[2010-01-04], 3}
+    ]
+
+    # Stable sorting
+    assert List.keysort(collection, 0, Date) == [
+             {~D[2010-01-01], 5},
+             {~D[2010-01-02], 4},
+             {~D[2010-01-02], 2},
+             {~D[2010-01-03], 1},
+             {~D[2010-01-04], 3}
+           ]
+
+    assert List.keysort(collection, 0, Date) ==
+             List.keysort(collection, 0, {:asc, Date})
+
+    assert List.keysort(collection, 0, {:desc, Date}) == [
+             {~D[2010-01-04], 3},
+             {~D[2010-01-03], 1},
+             {~D[2010-01-02], 4},
+             {~D[2010-01-02], 2},
+             {~D[2010-01-01], 5}
+           ]
+  end
+
   test "keystore/4" do
     assert List.keystore([a: 1, b: 2], :a, 0, {:a, 3}) == [a: 3, b: 2]
     assert List.keystore([a: 1], :b, 0, {:b, 2}) == [a: 1, b: 2]
@@ -244,9 +312,9 @@ defmodule ListTest do
   end
 
   test "to_charlist/1" do
-    assert List.to_charlist([0x00E6, 0x00DF]) == 'æß'
-    assert List.to_charlist([0x0061, "bc"]) == 'abc'
-    assert List.to_charlist([0x0064, "ee", ['p']]) == 'deep'
+    assert List.to_charlist([0x00E6, 0x00DF]) == ~c"æß"
+    assert List.to_charlist([0x0061, "bc"]) == ~c"abc"
+    assert List.to_charlist([0x0064, "ee", [~c"p"]]) == ~c"deep"
 
     assert_raise UnicodeConversionError, "invalid code point 57343", fn ->
       List.to_charlist([0xDFFF])
@@ -305,12 +373,12 @@ defmodule ListTest do
   describe "ascii_printable?/2" do
     test "proper lists without limit" do
       assert List.ascii_printable?([])
-      assert List.ascii_printable?('abc')
-      refute(List.ascii_printable?('abc' ++ [0]))
-      refute List.ascii_printable?('mañana')
+      assert List.ascii_printable?(~c"abc")
+      refute(List.ascii_printable?(~c"abc" ++ [0]))
+      refute List.ascii_printable?(~c"mañana")
 
-      printable_chars = '\a\b\t\n\v\f\r\e' ++ Enum.to_list(32..126)
-      non_printable_chars = '🌢áéíóúźç©¢🂭'
+      printable_chars = ~c"\a\b\t\n\v\f\r\e" ++ Enum.to_list(32..126)
+      non_printable_chars = ~c"🌢áéíóúźç©¢🂭"
 
       assert List.ascii_printable?(printable_chars)
 
@@ -327,12 +395,12 @@ defmodule ListTest do
 
     test "proper lists with limit" do
       assert List.ascii_printable?([], 100)
-      assert List.ascii_printable?('abc' ++ [0], 2)
+      assert List.ascii_printable?(~c"abc" ++ [0], 2)
     end
 
     test "improper lists" do
-      refute List.ascii_printable?('abc' ++ ?d)
-      assert List.ascii_printable?('abc' ++ ?d, 3)
+      refute List.ascii_printable?(~c"abc" ++ ?d)
+      assert List.ascii_printable?(~c"abc" ++ ?d, 3)
     end
   end
 end

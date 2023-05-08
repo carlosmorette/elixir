@@ -24,7 +24,7 @@ defmodule Macro.Env do
     * `context` - the context of the environment; it can be `nil`
       (default context), `:guard` (inside a guard) or `:match` (inside a match)
     * `context_modules` - a list of modules defined in the current context
-    * `file` - the current file name as a binary
+    * `file` - the current absolute file name as a binary
     * `function` - a tuple as `{atom, integer}`, where the first
       element is the function name and the second its arity; returns
       `nil` if not inside a function
@@ -79,31 +79,39 @@ defmodule Macro.Env do
           versioned_vars: versioned_vars
         }
 
-  # Define the __struct__ callbacks by hand for bootstrap reasons.
-  @doc false
-  def __struct__ do
-    %{
-      __struct__: __MODULE__,
-      aliases: [],
-      context: nil,
-      context_modules: [],
-      file: "nofile",
-      function: nil,
-      functions: [],
-      lexical_tracker: nil,
-      line: 0,
-      macro_aliases: [],
-      macros: [],
-      module: nil,
-      requires: [],
-      tracers: [],
-      versioned_vars: %{}
-    }
-  end
+  fields = [
+    aliases: [],
+    context: nil,
+    context_modules: [],
+    file: "nofile",
+    function: nil,
+    functions: [],
+    lexical_tracker: nil,
+    line: 0,
+    macro_aliases: [],
+    macros: [],
+    module: nil,
+    requires: [],
+    tracers: [],
+    versioned_vars: %{}
+  ]
 
-  @doc false
-  def __struct__(kv) do
-    Enum.reduce(kv, __struct__(), fn {k, v}, acc -> :maps.update(k, v, acc) end)
+  # Define the __struct__ callbacks by hand for bootstrap reasons.
+  {struct, [], kv, body} = Kernel.Utils.defstruct(__MODULE__, fields, false)
+  def __struct__(), do: unquote(:elixir_quote.escape(struct, false, :none))
+  def __struct__(unquote(kv)), do: unquote(body)
+
+  @doc """
+  Prunes compile information from the environment.
+
+  This happens when the environment is captured at compilation
+  time, for example, in the module body, and then used to
+  evaluate code after the module has been defined.
+  """
+  @doc since: "1.14.0"
+  @spec prune_compile_info(t) :: t
+  def prune_compile_info(env) do
+    %{env | lexical_tracker: nil, tracers: []}
   end
 
   @doc """
@@ -156,7 +164,10 @@ defmodule Macro.Env do
   end
 
   @doc """
-  Returns the alias for the given atom, `nil` otherwise.
+  Fetches the alias for the given atom.
+
+  Returns `{:ok, alias}` if the alias exists, `:error`
+  otherwise.
 
   ## Examples
 
@@ -175,7 +186,10 @@ defmodule Macro.Env do
     do: Keyword.fetch(aliases, :"Elixir.#{atom}")
 
   @doc """
-  Returns the macro alias for the given atom, `nil` otherwise.
+  Fetches the macro alias for the given atom.
+
+  Returns `{:ok, macro_alias}` if the alias exists, `:error`
+  otherwise.
 
   A macro alias is only used inside quoted expansion. See
   `fetch_alias/2` for a more general example.
@@ -187,8 +201,8 @@ defmodule Macro.Env do
       do: Keyword.fetch(aliases, :"Elixir.#{atom}")
 
   @doc """
-  Returns from which modules the given `{name, arity}` is
-  imported from.
+  Returns the modules from which the given `{name, arity}` was
+  imported.
 
   It returns a list of two element tuples in the shape of
   `{:function | :macro, module}`. The elements in the list
@@ -222,6 +236,31 @@ defmodule Macro.Env do
   end
 
   @doc """
+  Returns the names of any aliases for the given module or atom.
+
+  ## Examples
+
+      iex> alias Foo.Bar
+      iex> Bar
+      Foo.Bar
+      iex> Macro.Env.lookup_alias_as(__ENV__, Foo.Bar)
+      [Elixir.Bar]
+      iex> alias Foo.Bar, as: Baz
+      iex> Baz
+      Foo.Bar
+      iex> Macro.Env.lookup_alias_as(__ENV__, Foo.Bar)
+      [Elixir.Bar, Elixir.Baz]
+      iex> Macro.Env.lookup_alias_as(__ENV__, Unknown)
+      []
+
+  """
+  @doc since: "1.15.0"
+  @spec lookup_alias_as(t, atom) :: [atom]
+  def lookup_alias_as(%{__struct__: Macro.Env, aliases: aliases}, atom) when is_atom(atom) do
+    for {name, ^atom} <- aliases, do: name
+  end
+
+  @doc """
   Returns true if the given module has been required.
 
   ## Examples
@@ -239,6 +278,20 @@ defmodule Macro.Env do
   @spec required?(t, module) :: boolean
   def required?(%{__struct__: Macro.Env, requires: requires}, mod) when is_atom(mod),
     do: mod in requires
+
+  @doc """
+  Prepend a tracer to the list of tracers in the environment.
+
+  ## Examples
+
+      Macro.Env.prepend_tracer(__ENV__, MyCustomTracer)
+
+  """
+  @doc since: "1.13.0"
+  @spec prepend_tracer(t, module) :: t
+  def prepend_tracer(%{__struct__: Macro.Env, tracers: tracers} = env, tracer) do
+    %{env | tracers: [tracer | tracers]}
+  end
 
   @doc """
   Returns a `Macro.Env` in the match context.

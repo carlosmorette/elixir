@@ -24,7 +24,7 @@ defmodule Port do
   receives data from multiple inputs and concatenates them in the output.
 
   After the port was created, we sent it two commands in the form of
-  messages using `Kernel.send/2`. The first command has the binary payload
+  messages using `send/2`. The first command has the binary payload
   of "hello" and the second has "world".
 
   After sending those two messages, we invoked the IEx helper `flush()`,
@@ -222,7 +222,7 @@ defmodule Port do
   @doc """
   Sends `data` to the port driver `port`.
 
-  For more information, see `:erlang.port_command/2`.
+  For more information, see `:erlang.port_command/3`.
 
   Inlined by the compiler.
   """
@@ -244,17 +244,18 @@ defmodule Port do
   end
 
   @doc """
-  Returns information about the `port` or `nil` if the port is closed.
+  Returns information about the `port` (or `nil` if the port is closed).
 
   For more information, see `:erlang.port_info/1`.
   """
   @spec info(port) :: keyword | nil
   def info(port) do
-    nillify(:erlang.port_info(port))
+    nilify(:erlang.port_info(port))
   end
 
   @doc """
-  Returns information about the `port` or `nil` if the port is closed.
+  Returns information about a specific field within
+  the `port` (or `nil` if the port is closed).
 
   For more information, see `:erlang.port_info/2`.
   """
@@ -270,7 +271,7 @@ defmodule Port do
   end
 
   def info(port, item) do
-    nillify(:erlang.port_info(port, item))
+    nilify(:erlang.port_info(port, item))
   end
 
   @doc """
@@ -323,7 +324,7 @@ defmodule Port do
     :erlang.ports()
   end
 
-  @compile {:inline, nillify: 1}
-  defp nillify(:undefined), do: nil
-  defp nillify(other), do: other
+  @compile {:inline, nilify: 1}
+  defp nilify(:undefined), do: nil
+  defp nilify(other), do: other
 end

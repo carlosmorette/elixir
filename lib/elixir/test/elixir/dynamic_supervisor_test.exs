@@ -10,7 +10,7 @@ defmodule DynamicSupervisorTest do
   end
 
   test "can be supervised directly" do
-    children = [{DynamicSupervisor, strategy: :one_for_one, name: :dyn_sup_spec_test}]
+    children = [{DynamicSupervisor, name: :dyn_sup_spec_test}]
     assert {:ok, _} = Supervisor.start_link(children, strategy: :one_for_one)
     assert DynamicSupervisor.which_children(:dyn_sup_spec_test) == []
   end
@@ -19,10 +19,9 @@ defmodule DynamicSupervisorTest do
     {:ok, _} = Registry.start_link(keys: :unique, name: DynSup.Registry)
 
     children = [
-      {DynamicSupervisor, strategy: :one_for_one, name: :simple_name},
-      {DynamicSupervisor, strategy: :one_for_one, name: {:global, :global_name}},
-      {DynamicSupervisor,
-       strategy: :one_for_one, name: {:via, Registry, {DynSup.Registry, "via_name"}}}
+      {DynamicSupervisor, name: :simple_name},
+      {DynamicSupervisor, name: {:global, :global_name}},
+      {DynamicSupervisor, name: {:via, Registry, {DynSup.Registry, "via_name"}}}
     ]
 
     assert {:ok, supsup} = Supervisor.start_link(children, strategy: :one_for_one)
@@ -69,7 +68,7 @@ defmodule DynamicSupervisorTest do
 
   describe "init/1" do
     test "set default options" do
-      assert DynamicSupervisor.init(strategy: :one_for_one) ==
+      assert DynamicSupervisor.init([]) ==
                {:ok,
                 %{
                   strategy: :one_for_one,
@@ -99,6 +98,9 @@ defmodule DynamicSupervisorTest do
 
       assert DynamicSupervisor.start_link(Simple, {:ok, %{extra_arguments: -1}}) ==
                {:error, {:supervisor_data, {:invalid_extra_arguments, -1}}}
+
+      assert DynamicSupervisor.start_link(Simple, {:ok, %{auto_shutdown: :any_significant}}) ==
+               {:error, {:supervisor_data, {:invalid_auto_shutdown, :any_significant}}}
 
       assert DynamicSupervisor.start_link(Simple, :unknown) ==
                {:error, {:bad_return, {Simple, :init, :unknown}}}
@@ -230,6 +232,20 @@ defmodule DynamicSupervisorTest do
 
       assert DynamicSupervisor.start_child(:not_used, %{id: 1, start: {Task, :foo, :bar}}) ==
                {:error, {:invalid_mfa, {Task, :foo, :bar}}}
+
+      assert DynamicSupervisor.start_child(:not_used, %{
+               id: 1,
+               start: {Task, :foo, [:bar]},
+               shutdown: -1
+             }) ==
+               {:error, {:invalid_shutdown, -1}}
+
+      assert DynamicSupervisor.start_child(:not_used, %{
+               id: 1,
+               start: {Task, :foo, [:bar]},
+               significant: true
+             }) ==
+               {:error, {:invalid_significant, true}}
     end
 
     test "with different returns" do
@@ -450,6 +466,31 @@ defmodule DynamicSupervisorTest do
       assert {:ok, child_pid} = DynamicSupervisor.start_child(pid, child)
       assert_kill(child_pid, :shutdown)
       assert_receive {:EXIT, ^pid, :shutdown}
+    end
+
+    test "with valid shutdown" do
+      Process.flag(:trap_exit, true)
+
+      {:ok, pid} = DynamicSupervisor.start_link(strategy: :one_for_one)
+
+      for n <- 0..1 do
+        assert {:ok, child_pid} =
+                 DynamicSupervisor.start_child(pid, %{
+                   id: n,
+                   start: {Task, :start_link, [fn -> Process.sleep(:infinity) end]},
+                   shutdown: n
+                 })
+
+        assert_kill(child_pid, :shutdown)
+      end
+    end
+
+    test "with invalid valid shutdown" do
+      assert DynamicSupervisor.start_child(:not_used, %{
+               id: 1,
+               start: {Task, :start_link, [fn -> :ok end]},
+               shutdown: -1
+             }) == {:error, {:invalid_shutdown, -1}}
     end
 
     def start_link(:ok3), do: {:ok, spawn_link(fn -> Process.sleep(:infinity) end), :extra}

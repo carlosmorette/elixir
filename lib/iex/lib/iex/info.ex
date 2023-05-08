@@ -1,6 +1,45 @@
 defprotocol IEx.Info do
   @fallback_to_any true
 
+  @moduledoc """
+  A protocol to print information in IEx about the given datastructure.
+
+  `IEx.Helpers.i/1` uses this protocol to display a term-specific list
+  of of information.
+
+  By default, an `Any` implementation will be used which returns
+  the `"Data type"`, `"Description"` and `"Reference modules"` sections.
+  """
+
+  @doc """
+  Returns information for the given term.
+
+  Information should be returned as a list of `info_name`-`info` tuples,
+  where `info_name` is a string-like value, such as an atom or a string
+  itself, and `info` is a string. `info_name` should be short. `info` can
+  be arbitrarily long and contain newlines.
+
+  `IEx.Helpers.i/1` will generate (and always display)
+  the 'Implemented protocols' and 'Term' sections in the result.
+
+  All other sections of information are added (and can be overridden)
+  by customized implementations of this function.
+
+  It is recommended to at least include the following sections for a
+  custom implementation:
+
+    * `"Data type"`: Name of the data type. Usually the name of the module
+       defining the data type.
+    * `"Description"`: One or a few sentences describing what the data type represents.
+    * `"Reference modules`: One or a few comma-separated module names that focus
+      on working with this datatype.
+
+  Other recommended sections are:
+
+    * `"Raw representation`: showing another way of writing the passed `term`.
+      This is mostly relevant for data-structures whose `String.Chars`-implementations
+      make use of sigils or other syntactic sugar.
+  """
   @spec info(term()) :: [{info_name :: String.Chars.t(), info :: String.t()}]
   def info(term)
 end
@@ -142,10 +181,11 @@ defimpl IEx.Info, for: List do
 
   defp info_printable_charlist(charlist) do
     description = """
-    This is a list of integers that is printed as a sequence of characters
-    delimited by single quotes because all the integers in it represent printable
-    ASCII characters. Conventionally, a list of Unicode code points is known as a
-    charlist and a list of ASCII characters is a subset of it.
+    This is a list of integers that is printed using the `~c` sigil syntax,
+    defined by the `Kernel.sigil_c/2` macro, because all the integers in it
+    represent printable ASCII characters. Conventionally, a list of Unicode
+    code points is known as a charlist and a list of ASCII characters is a
+    subset of it.
     """
 
     [
@@ -358,12 +398,16 @@ defimpl IEx.Info, for: Reference do
   end
 end
 
-defimpl IEx.Info, for: [Date, Time, NaiveDateTime] do
-  {sigil, repr} =
+defimpl IEx.Info, for: [Date, Time, DateTime, NaiveDateTime, Regex] do
+  naive_datetime_repr = ~S{"naive" datetime (that is, a datetime without a time zone)}
+
+  {sigil, repr, modules} =
     case @for do
-      Date -> {"D", "date"}
-      Time -> {"T", "time"}
-      NaiveDateTime -> {"N", ~S{"naive" datetime (that is, a datetime without a time zone)}}
+      Date -> {"D", "date", [Calendar, Map]}
+      Time -> {"T", "time", [Calendar, Map]}
+      DateTime -> {"U", "datetime", [Calendar, Map]}
+      NaiveDateTime -> {"N", naive_datetime_repr, [Calendar, Map]}
+      Regex -> {"r", "regular expression", [:re]}
     end
 
   def info(value) do
@@ -377,7 +421,31 @@ defimpl IEx.Info, for: [Date, Time, NaiveDateTime] do
       {"Data type", inspect(@for)},
       {"Description", description},
       {"Raw representation", raw_inspect(value)},
-      {"Reference modules", inspect(@for) <> ", Calendar, Map"}
+      {"Reference modules", unquote(Enum.map_join([@for | modules], ", ", &inspect/1))}
+    ]
+  end
+
+  defp raw_inspect(value) do
+    value
+    |> Inspect.Any.inspect(%Inspect.Opts{})
+    |> Inspect.Algebra.format(:infinity)
+    |> IO.iodata_to_binary()
+  end
+end
+
+defimpl IEx.Info, for: Range do
+  def info(value) do
+    description = """
+    This is a struct representing a range of numbers. It is commonly
+    defined using the `first..last//step` syntax. The step is not
+    required and defaults to 1.
+    """
+
+    [
+      {"Data type", inspect(@for)},
+      {"Description", description},
+      {"Raw representation", raw_inspect(value)},
+      {"Reference modules", inspect(@for)}
     ]
   end
 

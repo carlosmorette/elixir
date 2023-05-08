@@ -5,6 +5,10 @@ defmodule Mix.ProjectStack do
   @name __MODULE__
   @timeout :infinity
 
+  # compile.lock is not the best name, but the name is completely
+  # opaque and we keep it for backwards compatibility (just in case).
+  @manifest "compile.lock"
+
   @typep file :: binary
   @typep config :: keyword
   @typep project :: %{name: module, config: config, file: file}
@@ -14,7 +18,7 @@ defmodule Mix.ProjectStack do
     GenServer.start_link(__MODULE__, :ok, name: @name)
   end
 
-  @spec on_clean_slate((() -> result)) :: result when result: var
+  @spec on_clean_slate((-> result)) :: result when result: var
   def on_clean_slate(callback) do
     previous_state = update_state(fn state -> {state, initial_state()} end)
 
@@ -37,7 +41,23 @@ defmodule Mix.ProjectStack do
     end)
   end
 
-  @spec on_recursing_root((() -> result)) :: result when result: var
+  @spec pop_post_config(atom) :: term
+  def pop_post_config(key) do
+    update_state(fn {stack, post_config} ->
+      {value, post_config} = Keyword.pop(post_config, key)
+      {value, {stack, post_config}}
+    end)
+  end
+
+  @spec merge_config(config) :: :ok
+  def merge_config(config) do
+    update_stack(fn
+      [h | t] -> {:ok, [update_in(h.config, &Keyword.merge(&1, config)) | t]}
+      [] -> {:ok, []}
+    end)
+  end
+
+  @spec on_recursing_root((-> result)) :: result when result: var
   def on_recursing_root(fun) do
     {top, file} =
       update_stack(fn stack ->
@@ -72,21 +92,41 @@ defmodule Mix.ProjectStack do
     end)
   end
 
+  # We include the year 2000 as a minimum value in case we
+  # don't have any config files, which would return 0 and
+  # then not trigger stale sources.
+  @minimum_mtime 946_684_800
+
   @spec config_mtime() :: integer
   def config_mtime() do
     mtime_or_files =
       get_stack(fn
         [%{config_mtime: nil, config_files: files} | _] -> files
         [%{config_mtime: mtime} | _] -> mtime
-        [] -> 0
+        [] -> @minimum_mtime
       end)
 
     if is_list(mtime_or_files) do
-      mtime = mtime_or_files |> Enum.map(&Mix.Utils.last_modified/1) |> Enum.max()
+      mtime =
+        mtime_or_files
+        |> Enum.map(&Mix.Utils.last_modified/1)
+        |> Enum.max()
+        |> max(@minimum_mtime)
+
       update_stack(fn [h | t] -> {mtime, [%{h | config_mtime: mtime} | t]} end)
     else
       mtime_or_files
     end
+  end
+
+  @spec reset_config_mtime() :: binary
+  def reset_config_mtime() do
+    update_stack(fn
+      [h | t] -> {:ok, [%{h | config_mtime: nil} | t]}
+      [] -> {:ok, []}
+    end)
+
+    @manifest
   end
 
   @spec config_apps() :: [atom]
@@ -105,11 +145,27 @@ defmodule Mix.ProjectStack do
     end)
   end
 
-  @spec compile_env([term] | :unset) :: [term] | :unset
+  @spec project_file() :: binary | nil
+  def project_file() do
+    get_stack(fn
+      [h | _] -> h.file
+      [] -> nil
+    end)
+  end
+
+  @spec parent_umbrella_project_file() :: binary | nil
+  def parent_umbrella_project_file() do
+    get_stack(fn
+      [_, h | _] -> if h.config[:apps_path], do: h.file, else: nil
+      _ -> nil
+    end)
+  end
+
+  @spec compile_env([term] | nil) :: [term] | nil
   def compile_env(compile_env) do
     update_stack(fn
       [h | t] -> {h.compile_env, [%{h | compile_env: compile_env} | t]}
-      [] -> {:unset, []}
+      [] -> {nil, []}
     end)
   end
 
@@ -173,7 +229,7 @@ defmodule Mix.ProjectStack do
     end)
   end
 
-  @spec recur((() -> result)) :: result when result: var
+  @spec recur((-> result)) :: result when result: var
   def recur(fun) do
     update_stack(fn [h | t] -> {:ok, [%{h | recursing?: true} | t]} end)
 
@@ -200,6 +256,8 @@ defmodule Mix.ProjectStack do
         # project takes ahold of the shell.
         io_done? = stack == []
         config = Keyword.merge(config, post_config)
+        manifest_file = Path.join(Mix.Project.manifest_path(config), @manifest)
+        parent_files = peek_config_files(config[:inherit_parent_config_files], stack)
 
         project = %{
           name: module,
@@ -209,10 +267,10 @@ defmodule Mix.ProjectStack do
           recursing?: false,
           io_done: io_done?,
           config_apps: [],
-          config_files: [file] ++ peek_config_files(config[:inherit_parent_config_files], stack),
+          config_files: [manifest_file | parent_files],
           config_mtime: nil,
           after_compiler: %{},
-          compile_env: :unset
+          compile_env: nil
         }
 
         {:ok, {[project | stack], []}}

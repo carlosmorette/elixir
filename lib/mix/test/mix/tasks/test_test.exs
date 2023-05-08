@@ -168,11 +168,16 @@ defmodule Mix.Tasks.TestTest do
 
         # We skip a test in bar to force coverage below the default threshold
         # which should result in an exit status of 1.
-        assert {_, code} = mix_code(["test", "--cover", "--exclude", "maybe_skip"])
+        assert {output, code} = mix_code(["test", "--cover", "--exclude", "maybe_skip"])
 
-        unless windows?() do
-          assert code == 3
-        end
+        assert output =~ """
+               Coverage test failed, threshold not met:
+
+                   Coverage:    0.00%
+                   Threshold:  90.00%
+               """
+
+        assert code == 3
       end)
     end
 
@@ -232,6 +237,11 @@ defmodule Mix.Tasks.TestTest do
         # Nothing should get run if we try it again since everything is passing.
         assert mix(["test", "--failed"]) =~ "There are no tests to run"
 
+        # When everything is passing and a file is passed, we return the proper message
+        output = mix(["test", "test/passing_and_failing_test_failed.exs", "--failed"])
+        assert output =~ "There are no tests to run"
+        refute output =~ "does not match"
+
         # `--failed` and `--stale` cannot be combined
         output = mix(["test", "--failed", "--stale"])
         assert output =~ "Combining --failed and --stale is not supported"
@@ -254,6 +264,7 @@ defmodule Mix.Tasks.TestTest do
       end)
     end
 
+    @tag :unix
     test "does not exit on compilation failure" do
       in_fixture("test_stale", fn ->
         File.write!("lib/b.ex", """
@@ -288,7 +299,7 @@ defmodule Mix.Tasks.TestTest do
 
         Port.command(port, "\n")
 
-        message = "undefined function error_not_a_var"
+        message = "undefined variable \"error_not_a_var\""
         assert receive_until_match(port, message, "") =~ "test/b_test_stale.exs"
 
         File.write!("test/b_test_stale.exs", """
@@ -353,13 +364,62 @@ defmodule Mix.Tasks.TestTest do
         )
       end)
     end
+
+    test "do not raise if partitions flag is set to 1 and no partition given" do
+      in_fixture("test_stale", fn ->
+        assert mix(["test", "--partitions", "1"], []) =~
+                 "2 tests, 0 failures"
+
+        assert mix(["test", "--partitions", "1"], [{"MIX_TEST_PARTITION", ""}]) =~
+                 "2 tests, 0 failures"
+
+        assert mix(["test", "--partitions", "1"], [{"MIX_TEST_PARTITION", "1"}]) =~
+                 "2 tests, 0 failures"
+      end)
+    end
+
+    test "raise if partitions is set to non-positive value" do
+      in_fixture("test_stale", fn ->
+        File.write!("test/test_helper.exs", """
+        Mix.shell(Mix.Shell.Process)
+        ExUnit.start()
+        """)
+
+        assert_run_output(
+          ["--partitions", "0"],
+          "--partitions : expected to be positive integer, got 0"
+        )
+
+        assert_run_output(
+          ["--partitions", "-1"],
+          "--partitions : expected to be positive integer, got -1"
+        )
+      end)
+    end
+
+    test "runs after_suite with partitions with no tests" do
+      in_fixture("test_stale", fn ->
+        File.write!("test/test_helper.exs", """
+        ExUnit.after_suite(fn _stats -> IO.puts("AFTER SUITE") end)
+        ExUnit.start()
+        """)
+
+        assert mix(["test", "--partitions", "3"], [{"MIX_TEST_PARTITION", "3"}]) =~ """
+               AFTER SUITE
+               There are no tests to run
+               """
+      end)
+    end
   end
 
   describe "logs and errors" do
     test "logs test absence for a project with no test paths" do
       in_fixture("test_stale", fn ->
         File.rm_rf!("test")
+        assert_run_output("There are no tests to run")
 
+        File.mkdir_p!("test")
+        File.write!("test/test_helper.exs", "ExUnit.start()")
         assert_run_output("There are no tests to run")
       end)
     end
@@ -394,14 +454,39 @@ defmodule Mix.Tasks.TestTest do
       in_fixture("umbrella_test", fn ->
         # Run false positive test first so at least the code is compiled
         # and we can perform more aggressive assertions later
-        assert mix(["test", "apps/unknown_app/test"]) =~ """
+        output = mix(["test", "apps/unknown_app/test"])
+
+        assert output =~ """
                ==> bar
                Paths given to "mix test" did not match any directory/file: apps/unknown_app/test
+               """
+
+        assert output =~ """
                ==> foo
                Paths given to "mix test" did not match any directory/file: apps/unknown_app/test
                """
 
         output = mix(["test", "apps/bar/test/bar_tests.exs"])
+
+        assert output =~ """
+               ==> bar
+               ....
+               """
+
+        refute output =~ "==> foo"
+        refute output =~ "Paths given to \"mix test\" did not match any directory/file"
+
+        output = mix(["test", "./apps/bar/test/bar_tests.exs"])
+
+        assert output =~ """
+               ==> bar
+               ....
+               """
+
+        refute output =~ "==> foo"
+        refute output =~ "Paths given to \"mix test\" did not match any directory/file"
+
+        output = mix(["test", Path.expand("apps/bar/test/bar_tests.exs")])
 
         assert output =~ """
                ==> bar
@@ -430,6 +515,11 @@ defmodule Mix.Tasks.TestTest do
   describe "--warnings-as-errors" do
     test "fail on warning in tests" do
       in_fixture("test_stale", fn ->
+        msg =
+          "Test suite aborted after successful execution due to warnings while using the --warnings-as-errors option"
+
+        refute mix(["test", "--warnings-as-errors"]) =~ msg
+
         File.write!("lib/warning.ex", """
         unused_compile_var = 1
         """)
@@ -447,9 +537,7 @@ defmodule Mix.Tasks.TestTest do
         output = mix(["test", "--warnings-as-errors", "test/warning_test_stale.exs"])
         assert output =~ "variable \"unused_compile_var\" is unused"
         assert output =~ "variable \"unused_test_var\" is unused"
-
-        assert output =~
-                 "Test suite aborted after successful execution due to warnings while using the --warnings-as-errors option"
+        assert output =~ msg
       end)
     end
 
@@ -475,8 +563,6 @@ defmodule Mix.Tasks.TestTest do
   end
 
   describe "--exit-status" do
-    @describetag :unix
-
     test "returns custom exit status" do
       in_fixture("test_failed", fn ->
         {output, exit_status} = mix_code(["test", "--exit-status", "5"])

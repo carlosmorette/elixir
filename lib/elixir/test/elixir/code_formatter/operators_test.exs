@@ -8,13 +8,46 @@ defmodule Code.Formatter.OperatorsTest do
   @short_length [line_length: 10]
   @medium_length [line_length: 20]
 
+  describe "nullary" do
+    test "formats symbol operators" do
+      assert_same ".."
+    end
+
+    test "combines with unary and binary operators" do
+      assert_same "not .."
+      assert_same "left = .."
+      assert_same ".. = right"
+    end
+
+    test "is wrapped in parentheses on ambiguous calls" do
+      assert_same "require (..)"
+      assert_same "require foo, (..)"
+      assert_same "require (..), bar"
+      assert_same "require(..)"
+      assert_same "require(foo, ..)"
+      assert_same "require(.., bar)"
+
+      assert_same "assert [.., :ok]"
+      assert_same "assert {.., :ok}"
+      assert_same "assert (..) == 0..-1//1"
+      assert_same "assert 0..-1//1 == (..)"
+
+      assert_same """
+      defmacro (..) do
+        :ok
+      end\
+      """
+
+      assert_format "Range.range? (..)", "Range.range?(..)"
+    end
+  end
+
   describe "unary" do
     test "formats symbol operators without spaces" do
       assert_format "+ 1", "+1"
       assert_format "- 1", "-1"
       assert_format "! 1", "!1"
       assert_format "^ 1", "^1"
-      assert_format "~~~ 1", "~~~1"
     end
 
     test "formats word operators with spaces" do
@@ -63,18 +96,6 @@ defmodule Code.Formatter.OperatorsTest do
 
       good = """
       not foo(
-        bar,
-        baz,
-        bat
-      )
-      """
-
-      assert_format bad, good, @short_length
-
-      bad = "~~~ foo(bar, baz, bat)"
-
-      good = """
-      ~~~foo(
         bar,
         baz,
         bat
@@ -240,13 +261,13 @@ defmodule Code.Formatter.OperatorsTest do
     end
 
     test "with multiple of the different entry and same precedence" do
-      assert_same "foo <|> bar ~> baz"
+      assert_same "foo <~> bar ~> baz"
 
-      bad = "foo <|> bar ~> baz"
+      bad = "foo <~> bar ~> baz"
 
       good = """
       foo
-      <|> bar
+      <~> bar
       ~> baz
       """
 
@@ -656,11 +677,12 @@ defmodule Code.Formatter.OperatorsTest do
       """
 
       good = """
-      var = [
-        one,
-        two,
-        three
-      ]
+      var =
+        [
+          one,
+          two,
+          three
+        ]
       """
 
       assert_format bad, good, @short_length
@@ -688,19 +710,19 @@ defmodule Code.Formatter.OperatorsTest do
     end
 
     test "with heredoc" do
-      heredoc = ~S"""
-      var = '''
+      heredoc = ~S'''
+      var = """
       one
-      '''
       """
+      '''
 
       assert_same heredoc, @short_length
 
-      heredoc = ~S"""
-      var = '''
+      heredoc = ~S'''
+      var = """
       #{one}
-      '''
       """
+      '''
 
       assert_same heredoc, @short_length
     end
@@ -786,19 +808,19 @@ defmodule Code.Formatter.OperatorsTest do
     end
 
     test "with next break fits" do
-      attribute = """
-      @doc '''
+      attribute = ~S'''
+      @doc """
       foo
-      '''
       """
+      '''
 
       assert_same attribute
 
-      attribute = """
-      @doc foo: '''
+      attribute = ~S'''
+      @doc foo: """
            bar
-           '''
-      """
+           """
+      '''
 
       assert_same attribute
     end
@@ -850,6 +872,7 @@ defmodule Code.Formatter.OperatorsTest do
 
     test "with operators inside" do
       assert_format "& +1", "&(+1)"
+      assert_format "& 1[:foo]", "& 1[:foo]"
       assert_format "& not &1", "&(not &1)"
       assert_format "& a ++ b", "&(a ++ b)"
       assert_format "& &1 && &2", "&(&1 && &2)"

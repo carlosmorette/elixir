@@ -1,6 +1,6 @@
 -module(elixir_rewrite).
 -compile({inline, [inner_inline/4, inner_rewrite/5]}).
--export([erl_to_ex/3, inline/3, rewrite/5, match_rewrite/5, guard_rewrite/5, format_error/1]).
+-export([erl_to_ex/3, inline/3, rewrite/5, match_rewrite/5, guard_rewrite/6, format_error/1]).
 -include("elixir.hrl").
 
 %% Convenience variables
@@ -51,6 +51,7 @@ erl_to_ex(Mod, Fun, Args) ->
 inline(Mod, Fun, Arity) -> inner_inline(ex_to_erl, Mod, Fun, Arity).
 
 ?inline(?atom, to_charlist, 1, erlang, atom_to_list);
+?inline(?atom, to_string, 1, erlang, atom_to_binary);
 
 ?inline(?bitwise, 'bnot', 1, erlang, 'bnot');
 ?inline(?bitwise, 'band', 2, erlang, 'band');
@@ -144,6 +145,7 @@ inline(Mod, Fun, Arity) -> inner_inline(ex_to_erl, Mod, Fun, Arity).
 ?inline(?list, to_integer, 2, erlang, list_to_integer);
 ?inline(?list, to_tuple, 1, erlang, list_to_tuple);
 
+?inline(?map, intersect, 2, maps, intersect);
 ?inline(?map, keys, 1, maps, keys);
 ?inline(?map, merge, 2, maps, merge);
 ?inline(?map, to_list, 1, maps, to_list);
@@ -157,6 +159,8 @@ inline(Mod, Fun, Arity) -> inner_inline(ex_to_erl, Mod, Fun, Arity).
 ?inline(?node, spawn, 5, erlang, spawn_opt);
 ?inline(?node, spawn_link, 2, erlang, spawn_link);
 ?inline(?node, spawn_link, 4, erlang, spawn_link);
+?inline(?node, spawn_monitor, 2, erlang, spawn_monitor);
+?inline(?node, spawn_monitor, 4, erlang, spawn_monitor);
 
 ?inline(?port, close, 1, erlang, port_close);
 ?inline(?port, command, 2, erlang, port_command);
@@ -165,6 +169,8 @@ inline(Mod, Fun, Arity) -> inner_inline(ex_to_erl, Mod, Fun, Arity).
 ?inline(?port, list, 0, erlang, ports);
 ?inline(?port, open, 2, erlang, open_port);
 
+?inline(?process, alias, 0, erlang, alias);
+?inline(?process, alias, 1, erlang, alias);
 ?inline(?process, 'alive?', 1, erlang, is_process_alive);
 ?inline(?process, cancel_timer, 1, erlang, cancel_timer);
 ?inline(?process, cancel_timer, 2, erlang, cancel_timer);
@@ -185,6 +191,7 @@ inline(Mod, Fun, Arity) -> inner_inline(ex_to_erl, Mod, Fun, Arity).
 ?inline(?process, send, 3, erlang, send);
 ?inline(?process, spawn, 2, erlang, spawn_opt);
 ?inline(?process, spawn, 4, erlang, spawn_opt);
+?inline(?process, unalias, 1, erlang, unalias);
 ?inline(?process, unlink, 1, erlang, unlink);
 ?inline(?process, unregister, 1, erlang, unregister);
 
@@ -232,7 +239,6 @@ rewrite(Receiver, DotMeta, Right, Meta, Args) ->
   {EReceiver, ERight, EArgs} = inner_rewrite(ex_to_erl, DotMeta, Receiver, Right, Args),
   {{'.', DotMeta, [EReceiver, ERight]}, Meta, EArgs}.
 
-?rewrite(?atom, to_string, [Arg], erlang, atom_to_binary, [Arg, utf8]);
 ?rewrite(?kernel, is_map_key, [Map, Key], erlang, is_map_key, [Key, Map]);
 ?rewrite(?map, delete, [Map, Key], maps, remove, [Key, Map]);
 ?rewrite(?map, fetch, [Map, Key], maps, find, [Key, Map]);
@@ -243,6 +249,7 @@ rewrite(Receiver, DotMeta, Right, Meta, Args) ->
 ?rewrite(?port, monitor, [Arg], erlang, monitor, [port, Arg]);
 ?rewrite(?process, group_leader, [Pid, Leader], erlang, group_leader, [Leader, Pid]);
 ?rewrite(?process, monitor, [Arg], erlang, monitor, [process, Arg]);
+?rewrite(?process, monitor, [Arg, Opts], erlang, monitor, [process, Arg, Opts]);
 ?rewrite(?process, send_after, [Dest, Msg, Time], erlang, send_after, [Time, Dest, Msg]);
 ?rewrite(?process, send_after, [Dest, Msg, Time, Opts], erlang, send_after, [Time, Dest, Msg, Opts]);
 ?rewrite(?string, to_atom, [Arg], erlang, binary_to_atom, [Arg, utf8]);
@@ -317,14 +324,14 @@ static_append(_, _, _) -> throw(impossible).
 %% Guard rewrite is similar to regular rewrite, except
 %% it also verifies the resulting function is supported in
 %% guard context - only certain BIFs and operators are.
-guard_rewrite(Receiver, DotMeta, Right, Meta, Args) ->
+guard_rewrite(Receiver, DotMeta, Right, Meta, Args, Context) ->
   case inner_rewrite(ex_to_erl, DotMeta, Receiver, Right, Args) of
     {erlang, RRight, RArgs} ->
       case allowed_guard(RRight, length(RArgs)) of
         true -> {ok, {{'.', DotMeta, [erlang, RRight]}, Meta, RArgs}};
-        false -> {error, {invalid_guard, Receiver, Right, length(Args)}}
+        false -> {error, {invalid_guard, Receiver, Right, length(Args), Context}}
       end;
-    _ -> {error, {invalid_guard, Receiver, Right, length(Args)}}
+    _ -> {error, {invalid_guard, Receiver, Right, length(Args), Context}}
   end.
 
 %% erlang:is_record/2-3 are compiler guards in Erlang which we
@@ -334,9 +341,9 @@ allowed_guard(is_record, 3) -> false;
 allowed_guard(Right, Arity) ->
   erl_internal:guard_bif(Right, Arity) orelse elixir_utils:guard_op(Right, Arity).
 
-format_error({invalid_guard, Receiver, Right, Arity}) ->
-  io_lib:format("cannot invoke remote function ~ts.~ts/~B inside guards",
-                ['Elixir.Macro':to_string(Receiver), Right, Arity]);
+format_error({invalid_guard, Receiver, Right, Arity, Context}) ->
+  io_lib:format("cannot invoke remote function ~ts.~ts/~B inside ~ts",
+                ['Elixir.Macro':to_string(Receiver), Right, Arity, Context]);
 format_error({invalid_match, Receiver, Right, Arity}) ->
   io_lib:format("cannot invoke remote function ~ts.~ts/~B inside a match",
                 ['Elixir.Macro':to_string(Receiver), Right, Arity]);

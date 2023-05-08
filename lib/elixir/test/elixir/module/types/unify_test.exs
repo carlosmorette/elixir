@@ -406,8 +406,8 @@ defmodule Module.Types.UnifyTest do
     end
 
     test "vars" do
-      assert {{:var, 0}, var_context} = new_var({:foo, [version: 0], nil}, new_context())
-      assert {{:var, 1}, var_context} = new_var({:bar, [version: 1], nil}, var_context)
+      {{:var, 0}, var_context} = new_var({:foo, [version: 0], nil}, new_context())
+      {{:var, 1}, var_context} = new_var({:bar, [version: 1], nil}, var_context)
 
       assert {:ok, {:var, 0}, context} = unify({:var, 0}, :integer, var_context)
       assert lift_type({:var, 0}, context) == :integer
@@ -441,8 +441,8 @@ defmodule Module.Types.UnifyTest do
     end
 
     test "vars inside tuples" do
-      assert {{:var, 0}, var_context} = new_var({:foo, [version: 0], nil}, new_context())
-      assert {{:var, 1}, var_context} = new_var({:bar, [version: 1], nil}, var_context)
+      {{:var, 0}, var_context} = new_var({:foo, [version: 0], nil}, new_context())
+      {{:var, 1}, var_context} = new_var({:bar, [version: 1], nil}, var_context)
 
       assert {:ok, {:tuple, 1, [{:var, 0}]}, context} =
                unify({:tuple, 1, [{:var, 0}]}, {:tuple, 1, [:integer]}, var_context)
@@ -469,7 +469,7 @@ defmodule Module.Types.UnifyTest do
     # TODO: Vars inside right unions
 
     test "vars inside left unions" do
-      assert {{:var, 0}, var_context} = new_var({:foo, [version: 0], nil}, new_context())
+      {{:var, 0}, var_context} = new_var({:foo, [version: 0], nil}, new_context())
 
       assert {:ok, {:var, 0}, context} =
                unify({:union, [{:var, 0}, :integer]}, :integer, var_context)
@@ -502,25 +502,25 @@ defmodule Module.Types.UnifyTest do
       assert {:ok, {:var, _}, context} = unify({:var, 0}, :tuple, var_context)
       assert {:ok, {:var, _}, context} = unify({:var, 1}, {:var, 0}, context)
       assert {:ok, {:var, _}, context} = unify({:var, 0}, {:var, 1}, context)
-      assert context.types[0] == {:var, 1}
-      assert context.types[1] == :tuple
+      assert context.types[0] == :tuple
+      assert context.types[1] == {:var, 0}
 
       assert {:ok, {:var, _}, context} = unify({:var, 0}, {:var, 1}, var_context)
       assert {:ok, {:var, _}, context} = unify({:var, 1}, {:var, 2}, context)
       assert {:ok, {:var, _}, _context} = unify({:var, 2}, {:var, 0}, context)
-      assert context.types[0] == :unbound
-      assert context.types[1] == {:var, 0}
-      assert context.types[2] == {:var, 1}
+      assert context.types[0] == {:var, 1}
+      assert context.types[1] == {:var, 2}
+      assert context.types[2] == :unbound
 
       assert {:ok, {:var, _}, context} = unify({:var, 0}, {:var, 1}, var_context)
 
-      assert {:error, {:unable_unify, {{:var, 0}, {:tuple, 1, [{:var, 0}]}, _}}} =
+      assert {:error, {:unable_unify, {{:var, 1}, {:tuple, 1, [{:var, 0}]}, _}}} =
                unify_lift({:var, 1}, {:tuple, 1, [{:var, 0}]}, context)
 
       assert {:ok, {:var, _}, context} = unify({:var, 0}, {:var, 1}, var_context)
       assert {:ok, {:var, _}, context} = unify({:var, 1}, {:var, 2}, context)
 
-      assert {:error, {:unable_unify, {{:var, 0}, {:tuple, 1, [{:var, 0}]}, _}}} =
+      assert {:error, {:unable_unify, {{:var, 2}, {:tuple, 1, [{:var, 0}]}, _}}} =
                unify_lift({:var, 2}, {:tuple, 1, [{:var, 0}]}, context)
     end
 
@@ -659,7 +659,7 @@ defmodule Module.Types.UnifyTest do
     assert to_union([{:atom, :foo}, :binary, :atom], new_context()) ==
              {:union, [:binary, :atom]}
 
-    assert {{:var, 0}, var_context} = new_var({:foo, [version: 0], nil}, new_context())
+    {{:var, 0}, var_context} = new_var({:foo, [version: 0], nil}, new_context())
     assert to_union([{:var, 0}], var_context) == {:var, 0}
 
     assert to_union([{:tuple, 1, [:integer]}, {:tuple, 1, [:integer]}], new_context()) ==
@@ -667,24 +667,26 @@ defmodule Module.Types.UnifyTest do
   end
 
   test "flatten_union/1" do
-    assert flatten_union(:binary) == [:binary]
-    assert flatten_union({:atom, :foo}) == [{:atom, :foo}]
-    assert flatten_union({:union, [:binary, {:atom, :foo}]}) == [:binary, {:atom, :foo}]
+    context = new_context()
+    assert flatten_union(:binary, context) == [:binary]
+    assert flatten_union({:atom, :foo}, context) == [{:atom, :foo}]
+    assert flatten_union({:union, [:binary, {:atom, :foo}]}, context) == [:binary, {:atom, :foo}]
 
-    assert flatten_union({:union, [{:union, [:integer, :binary]}, {:atom, :foo}]}) == [
+    assert flatten_union({:union, [{:union, [:integer, :binary]}, {:atom, :foo}]}, context) == [
              :integer,
              :binary,
              {:atom, :foo}
            ]
 
-    assert flatten_union({:tuple, 2, [:binary, {:atom, :foo}]}) ==
+    assert flatten_union({:tuple, 2, [:binary, {:atom, :foo}]}, context) ==
              [{:tuple, 2, [:binary, {:atom, :foo}]}]
 
-    assert flatten_union({:tuple, 1, [{:union, [:binary, :integer]}]}) ==
+    assert flatten_union({:tuple, 1, [{:union, [:binary, :integer]}]}, context) ==
              [{:tuple, 1, [:binary]}, {:tuple, 1, [:integer]}]
 
     assert flatten_union(
-             {:tuple, 2, [{:union, [:binary, :integer]}, {:union, [:binary, :integer]}]}
+             {:tuple, 2, [{:union, [:binary, :integer]}, {:union, [:binary, :integer]}]},
+             context
            ) ==
              [
                {:tuple, 2, [:binary, :binary]},
@@ -692,6 +694,22 @@ defmodule Module.Types.UnifyTest do
                {:tuple, 2, [:integer, :binary]},
                {:tuple, 2, [:integer, :integer]}
              ]
+
+    {{:var, 0}, var_context} = new_var({:foo, [version: 0], nil}, new_context())
+    assert flatten_union({:var, 0}, var_context) == [{:var, 0}]
+
+    {:ok, {:var, 0}, var_context} = unify({:var, 0}, :integer, var_context)
+    assert flatten_union({:var, 0}, var_context) == [:integer]
+
+    {{:var, 0}, var_context} = new_var({:foo, [version: 0], nil}, new_context())
+    {:ok, {:var, 0}, var_context} = unify({:var, 0}, {:union, [:integer, :float]}, var_context)
+    assert flatten_union({:var, 0}, var_context) == [:integer, :float]
+
+    {{:var, 0}, var_context} = new_var({:foo, [version: 0], nil}, new_context())
+    {{:var, 1}, var_context} = new_var({:bar, [version: 1], nil}, var_context)
+    {:ok, {:var, 0}, var_context} = unify({:var, 0}, {:var, 1}, var_context)
+    assert flatten_union({:var, 0}, var_context) == [{:var, 1}]
+    assert flatten_union({:var, 1}, var_context) == [{:var, 1}]
   end
 
   test "format_type/1" do

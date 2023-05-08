@@ -15,6 +15,7 @@ defmodule Mix.Compilers.Test do
   @compile {:no_warn_undefined, ExUnit}
   @stale_manifest "compile.test_stale"
   @manifest_vsn 1
+  @rand_algorithm :exs1024
 
   @doc """
   Requires and runs test files.
@@ -22,55 +23,84 @@ defmodule Mix.Compilers.Test do
   It expects all of the test patterns, the test files that were matched for the
   test patterns, the test paths, and the opts from the test task.
   """
-  def require_and_run(matched_test_files, test_paths, opts) do
+  def require_and_run(matched_test_files, test_paths, elixirc_opts, opts) do
+    elixirc_opts = Keyword.merge([docs: false, debug_info: false], elixirc_opts)
+    previous_opts = Code.compiler_options(elixirc_opts)
+
+    try do
+      require_and_run(matched_test_files, test_paths, opts)
+    after
+      Code.compiler_options(previous_opts)
+    end
+  end
+
+  defp require_and_run(matched_test_files, test_paths, opts) do
     stale = opts[:stale]
 
-    {test_files, stale_manifest_pid, parallel_require_opts} =
+    {test_files, stale_manifest_pid, parallel_require_callbacks} =
       if stale do
         set_up_stale(matched_test_files, test_paths, opts)
       else
         {matched_test_files, nil, []}
       end
 
-    if test_files == [] do
-      :noop
-    else
-      task = ExUnit.async_run()
-      parallel_require_opts = profile_opts(parallel_require_opts, opts)
-      warnings_as_errors? = Keyword.get(opts, :warnings_as_errors, false)
+    Application.ensure_all_started(:ex_unit)
 
-      try do
-        failed? =
-          case Kernel.ParallelCompiler.require(test_files, parallel_require_opts) do
-            {:ok, [_ | _], _} when warnings_as_errors? -> true
-            {:ok, _, _} -> false
-            {:error, _, _} -> exit({:shutdown, 1})
-          end
+    cond do
+      test_files == [] ->
+        # Make sure we run the after_suite callbacks but with no feedback
+        formatters = Application.fetch_env!(:ex_unit, :formatters)
 
-        %{failures: failures} = results = ExUnit.await_run(task)
-
-        if failures == 0 do
-          if failed? do
-            message =
-              "\nERROR! Test suite aborted after successful execution due to warnings while using the --warnings-as-errors option"
-
-            IO.puts(:stderr, IO.ANSI.format([:red, message]))
-            exit({:shutdown, 1})
-          end
-
-          agent_write_manifest(stale_manifest_pid)
+        try do
+          Application.put_env(:ex_unit, :formatters, [])
+          _ = ExUnit.run()
+          :noop
+        after
+          Application.put_env(:ex_unit, :formatters, formatters)
         end
 
-        {:ok, results}
-      catch
-        kind, reason ->
-          # In case there is an error, shut down the runner task
-          # before the error propagates up and trigger links.
-          Task.shutdown(task)
-          :erlang.raise(kind, reason, __STACKTRACE__)
-      after
-        agent_stop(stale_manifest_pid)
-      end
+      Keyword.get(opts, :profile_require) == "time" ->
+        Kernel.ParallelCompiler.require(test_files, profile: :time)
+        :noop
+
+      true ->
+        task = ExUnit.async_run()
+        warnings_as_errors? = Keyword.get(opts, :warnings_as_errors, false)
+        seed = Application.fetch_env!(:ex_unit, :seed)
+        test_files = shuffle(seed, test_files)
+
+        try do
+          failed? =
+            case Kernel.ParallelCompiler.require(test_files, parallel_require_callbacks) do
+              {:ok, _, [_ | _]} when warnings_as_errors? -> true
+              {:ok, _, _} -> false
+              {:error, _, _} -> exit({:shutdown, 1})
+            end
+
+          %{failures: failures} = results = ExUnit.await_run(task)
+
+          if failures == 0 do
+            if failed? do
+              message =
+                "\nERROR! Test suite aborted after successful execution due to warnings while using the --warnings-as-errors option"
+
+              IO.puts(:stderr, IO.ANSI.format([:red, message]))
+              exit({:shutdown, 1})
+            end
+
+            agent_write_manifest(stale_manifest_pid)
+          end
+
+          {:ok, results}
+        catch
+          kind, reason ->
+            # In case there is an error, shut down the runner task
+            # before the error propagates up and trigger links.
+            Task.shutdown(task)
+            :erlang.raise(kind, reason, __STACKTRACE__)
+        after
+          agent_stop(stale_manifest_pid)
+        end
     end
   end
 
@@ -82,9 +112,9 @@ defmodule Mix.Compilers.Test do
     removed =
       for source(source: source) <- all_sources, source not in matched_test_files, do: source
 
-    config_mtime = Mix.Project.config_mtime()
     test_helpers = Enum.map(test_paths, &Path.join(&1, "test_helper.exs"))
-    force = opts[:force] || Mix.Utils.stale?([config_mtime | test_helpers], [modified])
+    sources = [Mix.Project.config_mtime(), Mix.Project.project_file() | test_helpers]
+    force = opts[:force] || Mix.Utils.stale?(sources, [modified])
 
     changed =
       if force do
@@ -165,14 +195,6 @@ defmodule Mix.Compilers.Test do
       Enum.reduce(changed, sources, &List.keystore(&2, &1, source(:source), source(source: &1)))
 
     sources
-  end
-
-  defp profile_opts(target, opts) do
-    if Keyword.get(opts, :profile_require) == "time" do
-      Keyword.put(target, :profile, :time)
-    else
-      target
-    end
   end
 
   ## Manifest
@@ -295,5 +317,14 @@ defmodule Mix.Compilers.Test do
 
   defp get_external_resources(module, cwd) do
     for file <- Module.get_attribute(module, :external_resource), do: Path.relative_to(file, cwd)
+  end
+
+  defp shuffle(_seed = 0, list) do
+    list
+  end
+
+  defp shuffle(seed, list) do
+    _ = :rand.seed(@rand_algorithm, {seed, seed, seed})
+    Enum.shuffle(list)
   end
 end

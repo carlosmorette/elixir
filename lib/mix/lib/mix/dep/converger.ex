@@ -30,11 +30,34 @@ defmodule Mix.Dep.Converger do
           Enum.find(deps, fn %Mix.Dep{app: other_app} -> app == other_app end)
         end)
       else
-        Mix.raise("Could not sort dependencies. There are cycles in the dependency graph")
+        find_cycle(graph)
       end
     after
       :digraph.delete(graph)
     end
+  end
+
+  @doc """
+  A Depth-First Search to find where is the dependency graph cycle
+  and then display the cyclic dependencies back to the developer.
+  """
+  def find_cycle(graph), do: find_cycle(graph, :digraph.vertices(graph), MapSet.new())
+
+  defp find_cycle(_, [], _visited), do: nil
+
+  defp find_cycle(graph, [v | vs], visited) do
+    if v in visited, do: cycle_found(visited)
+
+    find_cycle(graph, :digraph.out_neighbours(graph, v), MapSet.put(visited, v))
+    find_cycle(graph, vs, visited)
+  end
+
+  defp cycle_found(visited) do
+    Mix.raise(
+      "Could not sort dependencies. " <>
+        "The following dependencies form a cycle: " <>
+        Enum.join(visited, ", ")
+    )
   end
 
   @doc """
@@ -54,11 +77,11 @@ defmodule Mix.Dep.Converger do
   end
 
   defp all(acc, lock, opts, callback) do
-    main = Mix.Dep.Loader.children()
+    lock_given? = !!lock
+
+    main = Mix.Dep.Loader.children(lock_given?)
     main = Enum.map(main, &%{&1 | top_level: true})
     apps = Enum.map(main, & &1.app)
-
-    lock_given? = !!lock
     env_target = {opts[:env], opts[:target]}
 
     # If no lock was given, let's read one to fill in the deps
@@ -69,7 +92,7 @@ defmodule Mix.Dep.Converger do
     # lazily loaded, we need to check for it on every
     # iteration.
     {deps, acc, lock} =
-      all(main, apps, callback, acc, lock, env_target, fn dep ->
+      init_all(main, apps, acc, lock, callback, lock_given?, env_target, fn dep ->
         if (remote = Mix.RemoteConverger.get()) && remote.remote?(dep) do
           {:loaded, dep}
         else
@@ -85,7 +108,7 @@ defmodule Mix.Dep.Converger do
     use_remote? = !!remote and Enum.any?(deps, &remote.remote?/1)
 
     if not diverged? and use_remote? do
-      # Make sure there are no cycles before calling remote converge
+      # Make sure there are no cycles before calling the remote converger
       topological_sort(deps)
 
       # If there is a lock, it means we are doing a get/update
@@ -105,7 +128,7 @@ defmodule Mix.Dep.Converger do
       # which is potentially stale. So remote.deps/2 needs to always
       # check if the data it finds in the lock is actually valid.
       {deps, acc, lock} =
-        all(main, apps, callback, acc, lock, env_target, fn dep ->
+        init_all(main, apps, acc, lock, callback, lock_given?, env_target, fn dep ->
           if cached = cache[{dep.app, dep.scm}] do
             {:loaded, cached}
           else
@@ -119,8 +142,9 @@ defmodule Mix.Dep.Converger do
     end
   end
 
-  defp all(main, apps, callback, rest, lock, env_target, cache) do
-    {deps, rest, lock} = all(main, [], [], apps, callback, rest, lock, env_target, cache)
+  defp init_all(main, apps, rest, lock, callback, locked?, env_target, cache) do
+    state = %{locked?: locked?, env_target: env_target, cache: cache, callback: callback}
+    {deps, _optional, rest, lock} = all(main, [], [], apps, [], rest, lock, state)
     deps = Enum.reverse(deps)
     # When traversing dependencies, we keep skipped ones to
     # find conflicts. We remove them now after traversal.
@@ -167,48 +191,53 @@ defmodule Mix.Dep.Converger do
   # Now, since "d" was specified in a parent project, no
   # exception is going to be raised since d is considered
   # to be the authoritative source.
-  defp all([dep | t], acc, upper_breadths, breadths, callback, rest, lock, env_target, cache) do
-    case match_deps(acc, upper_breadths, dep, env_target) do
+  defp all([dep | t], acc, upper, breadths, optional, rest, lock, state) do
+    case match_deps(acc, upper, dep, state.env_target) do
       {:replace, dep, acc} ->
-        all([dep | t], acc, upper_breadths, breadths, callback, rest, lock, env_target, cache)
+        all([dep | t], acc, upper, breadths, optional, rest, lock, state)
 
       {:match, acc} ->
-        all(t, acc, upper_breadths, breadths, callback, rest, lock, env_target, cache)
+        all(t, acc, upper, breadths, optional, rest, lock, state)
 
       :skip ->
         # We still keep skipped dependencies around to detect conflicts.
         # They must be rejected after every all iteration.
-        all(t, [dep | acc], upper_breadths, breadths, callback, rest, lock, env_target, cache)
+        all(t, [dep | acc], upper, breadths, optional, rest, lock, state)
 
       :nomatch ->
-        {dep, rest, lock} =
-          case cache.(dep) do
+        {%{app: app, deps: deps, opts: opts} = dep, rest, lock} =
+          case state.cache.(dep) do
             {:loaded, cached_dep} ->
               {cached_dep, rest, lock}
 
             {:unloaded, dep, children} ->
-              {dep, rest, lock} = callback.(put_lock(dep, lock), rest, lock)
+              {dep, rest, lock} = state.callback.(put_lock(dep, lock), rest, lock)
 
               Mix.Dep.Loader.with_system_env(dep, fn ->
                 # After we invoke the callback (which may actually check out the
                 # dependency), we load the dependency including its latest info
                 # and children information.
-                {Mix.Dep.Loader.load(dep, children), rest, lock}
+                {Mix.Dep.Loader.load(dep, children, state.locked?), rest, lock}
               end)
           end
 
-        {acc, rest, lock} =
-          all(t, [dep | acc], upper_breadths, breadths, callback, rest, lock, env_target, cache)
+        # Something that we previously ruled out as an optional dependency is
+        # no longer a dependency. Add it back for traversal.
+        {no_longer_optional, optional} = Enum.split_with(optional, &(&1.app == app))
 
-        umbrella? = dep.opts[:from_umbrella]
-        deps = reject_non_fulfilled_optional(dep.deps, Enum.map(acc, & &1.app), umbrella?)
+        {acc, optional, rest, lock} =
+          all(no_longer_optional ++ t, [dep | acc], upper, breadths, optional, rest, lock, state)
+
+        {discarded, deps} =
+          split_non_fulfilled_optional(deps, Enum.map(acc, & &1.app), opts[:from_umbrella])
+
         new_breadths = Enum.map(deps, & &1.app) ++ breadths
-        all(deps, acc, breadths, new_breadths, callback, rest, lock, env_target, cache)
+        all(deps, acc, breadths, new_breadths, discarded ++ optional, rest, lock, state)
     end
   end
 
-  defp all([], acc, _upper, _current, _callback, rest, lock, _env_target, _cache) do
-    {acc, rest, lock}
+  defp all([], acc, _upper, _current, optional, rest, lock, _state) do
+    {acc, optional, rest, lock}
   end
 
   defp put_lock(%Mix.Dep{app: app} = dep, lock) do
@@ -353,12 +382,13 @@ defmodule Mix.Dep.Converger do
     apps = Enum.map(deps, & &1.app)
 
     for dep <- deps do
-      update_in(dep.deps, &reject_non_fulfilled_optional(&1, apps, dep.opts[:from_umbrella]))
+      {_discarded, deps} = split_non_fulfilled_optional(dep.deps, apps, dep.opts[:from_umbrella])
+      %{dep | deps: deps}
     end
   end
 
-  defp reject_non_fulfilled_optional(children, upper_breadths, umbrella?) do
-    Enum.reject(children, fn %Mix.Dep{app: app, opts: opts} ->
+  defp split_non_fulfilled_optional(children, upper_breadths, umbrella?) do
+    Enum.split_with(children, fn %Mix.Dep{app: app, opts: opts} ->
       opts[:optional] && app not in upper_breadths && !umbrella?
     end)
   end
@@ -367,7 +397,7 @@ defmodule Mix.Dep.Converger do
     %{other | manager: sort_manager(other_manager, manager, in_upper?)}
   end
 
-  @managers [:mix, :rebar3, :rebar, :make]
+  @managers [:mix, :rebar3, :make]
 
   defp sort_manager(other_manager, manager, true) do
     other_manager || manager

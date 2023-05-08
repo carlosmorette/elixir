@@ -6,8 +6,8 @@ defmodule Mix.ReleaseTest do
   import Mix.Release
   doctest Mix.Release
 
-  _ = Application.ensure_started(:eex)
-  _ = Application.ensure_started(:runtime_tools)
+  Application.ensure_loaded(:eex)
+  Application.ensure_loaded(:runtime_tools)
 
   @erts_version :erlang.system_info(:version)
   @erts_source Path.join(:code.root_dir(), "erts-#{@erts_version}")
@@ -15,6 +15,12 @@ defmodule Mix.ReleaseTest do
   @kernel_version Application.spec(:kernel, :vsn)
   @runtime_tools_version Application.spec(:runtime_tools, :vsn)
   @eex_ebin Application.app_dir(:eex, "ebin")
+
+  setup_all do
+    Mix.ensure_application!(:sasl)
+    Mix.ensure_application!(:crypto)
+    :ok
+  end
 
   setup do
     File.rm_rf!(tmp_path("mix_release"))
@@ -133,7 +139,7 @@ defmodule Mix.ReleaseTest do
 
     test "uses the locked version of an app", context do
       in_tmp(context.test, fn ->
-        # install newer version of the app in the custom erts
+        # install newer version of the app in the custom ERTS
         custom_erts_path = Path.join([File.cwd!(), "erts-#{@erts_version}"])
         File.cp_r!(@erts_source, custom_erts_path)
 
@@ -168,7 +174,7 @@ defmodule Mix.ReleaseTest do
         Mix.Project.in_project(:mix, project_path, app_config, fn _ ->
           Code.prepend_path(ebin_dir)
           release = from_config!(nil, app_config, [])
-          assert release.applications.cowboy[:vsn] == '1.1.2'
+          assert release.applications.cowboy[:vsn] == ~c"1.1.2"
         end)
       end)
     end
@@ -329,6 +335,46 @@ defmodule Mix.ReleaseTest do
       assert release.boot_scripts.start[:iex] == :temporary
     end
 
+    test "configures other applications in cascade", context do
+      in_tmp(context.test, fn ->
+        app =
+          {:application, :my_sample_mode,
+           applications: [:kernel, :stdlib, :elixir, :runtime_tools, :compiler],
+           description: ~c"my_sample_mode",
+           modules: [],
+           vsn: ~c"1.0.0"}
+
+        File.mkdir_p!("my_sample_mode/ebin")
+        Code.prepend_path("my_sample_mode/ebin")
+        format = :io_lib.format("%% coding: utf-8~n~p.~n", [app])
+        File.write!("my_sample_mode/ebin/my_sample_mode.app", format)
+
+        apps = [my_sample_mode: :temporary]
+        release = release(applications: apps)
+        assert release.boot_scripts.start[:my_sample_mode] == :temporary
+        assert release.boot_scripts.start[:runtime_tools] == :temporary
+        assert release.boot_scripts.start[:compiler] == :permanent
+
+        apps = [my_sample_mode: :temporary, elixir: :permanent]
+        release = release(applications: apps)
+        assert release.boot_scripts.start[:my_sample_mode] == :temporary
+        assert release.boot_scripts.start[:runtime_tools] == :temporary
+        assert release.boot_scripts.start[:compiler] == :permanent
+
+        apps = [my_sample_mode: :temporary, runtime_tools: :none, compiler: :none]
+        release = release(applications: apps)
+        assert release.boot_scripts.start[:my_sample_mode] == :temporary
+        assert release.boot_scripts.start[:runtime_tools] == :none
+        assert release.boot_scripts.start[:compiler] == :none
+
+        apps = [my_sample_mode: :temporary, elixir: :permanent, compiler: :none]
+        release = release(applications: apps)
+        assert release.boot_scripts.start[:my_sample_mode] == :temporary
+        assert release.boot_scripts.start[:runtime_tools] == :temporary
+        assert release.boot_scripts.start[:compiler] == :none
+      end)
+    end
+
     test "generates a start_clean script with only kernel and stdlib starting up" do
       release = release([])
 
@@ -389,7 +435,7 @@ defmodule Mix.ReleaseTest do
 
       assert {:ok,
               [
-                {:release, {'demo', '0.1.0'}, {:erts, @erts_version},
+                {:release, {~c"demo", ~c"0.1.0"}, {:erts, @erts_version},
                  [
                    {:kernel, _, :permanent},
                    {:stdlib, _, :permanent},
@@ -401,14 +447,14 @@ defmodule Mix.ReleaseTest do
                  ]}
               ]} = :file.consult(@boot_script_path <> ".rel")
 
-      assert {:ok, [{:script, {'demo', '0.1.0'}, instructions}]} =
+      assert {:ok, [{:script, {~c"demo", ~c"0.1.0"}, instructions}]} =
                :file.consult(@boot_script_path <> ".script")
 
-      assert {:path, ['$ROOT/lib/kernel-#{@kernel_version}/ebin']} in instructions
-      assert {:path, ['$RELEASE_LIB/elixir-#{@elixir_version}/ebin']} in instructions
+      assert {:path, [~c"$ROOT/lib/kernel-#{@kernel_version}/ebin"]} in instructions
+      assert {:path, [~c"$RELEASE_LIB/elixir-#{@elixir_version}/ebin"]} in instructions
 
       assert File.read!(@boot_script_path <> ".boot") |> :erlang.binary_to_term() ==
-               {:script, {'demo', '0.1.0'}, instructions}
+               {:script, {~c"demo", ~c"0.1.0"}, instructions}
     end
 
     test "prepends relevant paths" do
@@ -421,16 +467,16 @@ defmodule Mix.ReleaseTest do
                ["$RELEASE_LIB/sample"]
              ) == :ok
 
-      assert {:ok, [{:script, {'demo', '0.1.0'}, instructions}]} =
+      assert {:ok, [{:script, {~c"demo", ~c"0.1.0"}, instructions}]} =
                :file.consult(@boot_script_path <> ".script")
 
-      assert {:path, ['$ROOT/lib/kernel-#{@kernel_version}/ebin']} in instructions
-      refute {:path, ['$RELEASE_LIB/elixir-#{@elixir_version}/ebin']} in instructions
+      assert {:path, [~c"$ROOT/lib/kernel-#{@kernel_version}/ebin"]} in instructions
+      refute {:path, [~c"$RELEASE_LIB/elixir-#{@elixir_version}/ebin"]} in instructions
 
-      assert {:path, ['$RELEASE_LIB/sample', '$RELEASE_LIB/elixir-#{@elixir_version}/ebin']} in instructions
+      assert {:path, [~c"$RELEASE_LIB/sample", ~c"$RELEASE_LIB/elixir-#{@elixir_version}/ebin"]} in instructions
 
       assert File.read!(@boot_script_path <> ".boot") |> :erlang.binary_to_term() ==
-               {:script, {'demo', '0.1.0'}, instructions}
+               {:script, {~c"demo", ~c"0.1.0"}, instructions}
     end
 
     test "works when :load/:none is set at the leaf" do
@@ -479,6 +525,13 @@ defmodule Mix.ReleaseTest do
       assert message =~
                "Application :mix has mode :permanent but it depends on :elixir which is set to :none"
     end
+
+    test "does not raise on child unsafe mode if parent is in `skip_mode_validation_for`" do
+      # `:mix` is a parent that depends on `:elixir`
+      release = release(applications: [elixir: :load], skip_mode_validation_for: [:mix])
+      assert make_boot_script(release, @boot_script_path, release.boot_scripts.start) == :ok
+      assert make_boot_script(release, @boot_script_path, release.boot_scripts.start_clean) == :ok
+    end
   end
 
   describe "make_cookie/1" do
@@ -507,12 +560,19 @@ defmodule Mix.ReleaseTest do
       assert make_cookie(release(cookie: "lmnopqrstuv"), @cookie_path) == :ok
       assert File.read!(@cookie_path) == "lmnopqrstuv"
     end
+
+    test "does not ask to change if set to overwrite" do
+      assert make_cookie(release([]), @cookie_path) == :ok
+      send(self(), {:mix_shell_input, :yes?, false})
+      assert make_cookie(release([cookie: "lmnopqrstuv"], overwrite: true), @cookie_path) == :ok
+      assert File.read!(@cookie_path) == "lmnopqrstuv"
+    end
   end
 
   describe "make_start_erl/1" do
     @start_erl_path tmp_path("mix_release/start_erl.data")
 
-    test "writes erts and release versions" do
+    test "writes ERTS and release versions" do
       assert make_start_erl(release([]), @start_erl_path) == :ok
       assert File.read!(@start_erl_path) == "#{@erts_version} 0.1.0"
     end
@@ -532,13 +592,13 @@ defmodule Mix.ReleaseTest do
     test "writes sys_config with encoding" do
       assert make_sys_config(
                release([]),
-               [encoding: {:time_μs, :"£", "£", '£'}],
+               [encoding: {:_μ, :"£", "£", ~c"£"}],
                "unused/runtime/path"
              ) ==
                :ok
 
       {:ok, contents} = :file.consult(@sys_config)
-      assert contents == [[encoding: {:time_μs, :"£", "£", '£'}]]
+      assert contents == [[encoding: {:_μ, :"£", "£", ~c"£"}]]
     end
 
     test "writes the given sys_config with config providers" do
@@ -585,6 +645,11 @@ defmodule Mix.ReleaseTest do
     test "errors on bad config" do
       assert {:error, "Could not read configuration file." <> _} =
                make_sys_config(release([]), [foo: [bar: self()]], "unused/runtime/path")
+
+      env = %{__ENV__ | lexical_tracker: self()}
+
+      assert {:error, "Could not read configuration file." <> _} =
+               make_sys_config(release([]), [foo: [bar: env]], "unused/runtime/path")
     end
   end
 
@@ -707,8 +772,11 @@ defmodule Mix.ReleaseTest do
         |> File.read!()
         |> strip_beam()
 
-      assert {:error, :beam_lib, {:missing_chunk, _, 'Dbgi'}} = :beam_lib.chunks(beam, ['Dbgi'])
-      assert {:error, :beam_lib, {:missing_chunk, _, 'Docs'}} = :beam_lib.chunks(beam, ['Docs'])
+      assert {:error, :beam_lib, {:missing_chunk, _, ~c"Dbgi"}} =
+               :beam_lib.chunks(beam, [~c"Dbgi"])
+
+      assert {:error, :beam_lib, {:missing_chunk, _, ~c"Docs"}} =
+               :beam_lib.chunks(beam, [~c"Docs"])
     end
 
     test "can keep docs and debug info, if requested" do
@@ -717,8 +785,17 @@ defmodule Mix.ReleaseTest do
         |> File.read!()
         |> strip_beam(keep: ["Docs", "Dbgi"])
 
-      assert {:ok, {EEx, [{'Dbgi', _}]}} = :beam_lib.chunks(beam, ['Dbgi'])
-      assert {:ok, {EEx, [{'Docs', _}]}} = :beam_lib.chunks(beam, ['Docs'])
+      assert {:ok, {EEx, [{~c"Dbgi", _}]}} = :beam_lib.chunks(beam, [~c"Dbgi"])
+      assert {:ok, {EEx, [{~c"Docs", _}]}} = :beam_lib.chunks(beam, [~c"Docs"])
+    end
+
+    test "strip beams without compression" do
+      {:ok, beam} =
+        Path.join(@eex_ebin, "Elixir.EEx.beam")
+        |> File.read!()
+        |> strip_beam(compress: false)
+
+      assert match?(<<"FOR1", _::binary>>, beam)
     end
   end
 
@@ -728,9 +805,9 @@ defmodule Mix.ReleaseTest do
         app =
           {:application, :my_sample1,
            applications: [:kernel, :stdlib, :elixir],
-           description: 'my_sample1',
+           description: ~c"my_sample1",
            modules: [],
-           vsn: '1.0.0',
+           vsn: ~c"1.0.0",
            included_applications: [:runtime_tools]}
 
         File.mkdir_p!("my_sample1/ebin")
@@ -739,11 +816,9 @@ defmodule Mix.ReleaseTest do
         File.write!("my_sample1/ebin/my_sample1.app", format)
 
         release = release(applications: [my_sample1: :permanent])
-        assert release.applications.runtime_tools[:included]
         assert release.boot_scripts.start[:runtime_tools] == :load
 
         release = release(applications: [my_sample1: :permanent, runtime_tools: :none])
-        assert release.applications.runtime_tools[:included]
         assert release.boot_scripts.start[:runtime_tools] == :none
       end)
     end
@@ -753,9 +828,9 @@ defmodule Mix.ReleaseTest do
         app =
           {:application, :my_sample2,
            applications: [:kernel, :stdlib, :elixir, :runtime_tools],
-           description: 'my_sample',
+           description: ~c"my_sample",
            modules: [],
-           vsn: '1.0.0',
+           vsn: ~c"1.0.0",
            included_applications: [:runtime_tools]}
 
         File.mkdir_p!("my_sample2/ebin")
@@ -770,6 +845,28 @@ defmodule Mix.ReleaseTest do
     end
   end
 
+  describe "optional applications" do
+    test "are ignored if not available", context do
+      in_tmp(context.test, fn ->
+        app =
+          {:application, :my_sample1,
+           applications: [:kernel, :stdlib, :elixir, :unknown],
+           optional_applications: [:unknown],
+           description: ~c"my_sample1",
+           modules: [],
+           vsn: ~c"1.0.0"}
+
+        File.mkdir_p!("my_sample1/ebin")
+        Code.prepend_path("my_sample1/ebin")
+        format = :io_lib.format("%% coding: utf-8~n~p.~n", [app])
+        File.write!("my_sample1/ebin/my_sample1.app", format)
+
+        release = release(applications: [my_sample1: :permanent])
+        assert release.boot_scripts.start[:unknown] == nil
+      end)
+    end
+  end
+
   defp size!(path) do
     File.stat!(path).size
   end
@@ -778,8 +875,8 @@ defmodule Mix.ReleaseTest do
     File.stat!(path).mode
   end
 
-  defp release(config) do
-    from_config!(nil, config(releases: [demo: config]), [])
+  defp release(config, overrides \\ []) do
+    from_config!(nil, config(releases: [demo: config]), overrides)
   end
 
   defp config(extra \\ []) do

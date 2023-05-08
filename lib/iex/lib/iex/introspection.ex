@@ -35,6 +35,15 @@ defmodule IEx.Introspection do
       {mod, fun, []} ->
         {mod, fun}
 
+      {maybe_sigil, [_, _]} ->
+        case Atom.to_string(maybe_sigil) do
+          "sigil_" <> _ ->
+            {:{}, [], [find_decompose_fun_arity(maybe_sigil, 2, context), maybe_sigil, 2]}
+
+          _ ->
+            call
+        end
+
       {fun, []} ->
         {find_decompose_fun(fun, context), fun}
 
@@ -376,8 +385,9 @@ defmodule IEx.Introspection do
         :type_found
 
       is_nil(docs) and spec != [] ->
-        message = %{"en" => "Module was compiled without docs. Showing only specs."}
-        print_doc(["#{inspect(mod)}.#{fun}/#{arity}"], spec, "text/markdown", message, %{})
+        en = "Module was compiled without docs. Showing only specs."
+        formatted = Exception.format_mfa(mod, fun, arity)
+        print_doc([formatted], spec, "text/markdown", %{"en" => en}, %{})
         :ok
 
       is_nil(docs) ->
@@ -421,7 +431,8 @@ defmodule IEx.Introspection do
 
   defp find_doc_with_content(docs, function, arity) do
     case find_doc(docs, function, arity) do
-      {_, _, _, %{}, _} = doc -> doc
+      {_, _, _, :hidden, _} -> nil
+      {_, _, _, _, _} = doc -> doc
       _ -> nil
     end
   end
@@ -452,12 +463,24 @@ defmodule IEx.Introspection do
          {{kind, fun, arity}, _line, signature, doc, metadata},
          spec
        ) do
-    if callback_module = doc == %{} and callback_module(mod, fun, arity) do
+    callback_module = doc == :none and callback_module(mod, fun, arity)
+
+    if callback_module do
       filter = &match?({_, ^fun, ^arity}, elem(&1, 0))
 
       case get_callback_docs(callback_module, filter) do
-        :no_beam -> nil
-        callback_docs -> Enum.each(callback_docs, &print_typespec/1)
+        :no_beam ->
+          nil
+
+        callback_docs ->
+          en =
+            "#{Exception.format_mfa(mod, fun, arity)} has no docs but is a callback for behaviour " <>
+              "#{inspect(callback_module)}. Showing callback docs instead."
+
+          format_signature(language, kind, signature)
+          |> print_doc(spec, format, %{"en" => en}, metadata)
+
+          Enum.each(callback_docs, &print_typespec/1)
       end
     else
       print_doc(format_signature(language, kind, signature), spec, format, doc, metadata)
@@ -553,7 +576,7 @@ defmodule IEx.Introspection do
         |> Enum.sort()
         |> Enum.flat_map(fn {{_, function, arity}, _specs} = callback ->
           case find_doc(docs, function, arity) do
-            nil -> [{format, format_callback(callback), %{}, %{}}]
+            nil -> [{format, format_callback(callback), :none, %{}}]
             {_, _, _, :hidden, _} -> []
             {_, _, _, doc, metadata} -> [{format, format_callback(callback), doc, metadata}]
           end
@@ -715,7 +738,7 @@ defmodule IEx.Introspection do
       {_, _, _, content, metadata} = Enum.find(docs, &match?({:type, ^type, ^arity}, elem(&1, 0)))
       {format, format_type(typespec), content, metadata}
     else
-      {format, format_type(typespec), %{}, %{}}
+      {format, format_type(typespec), :none, %{}}
     end
   end
 

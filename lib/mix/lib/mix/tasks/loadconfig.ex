@@ -6,7 +6,7 @@ defmodule Mix.Tasks.Loadconfig do
   @moduledoc """
   Loads and persists the given configuration.
 
-      mix loadconfig path/to/config.exs
+      $ mix loadconfig path/to/config.exs
 
   Any configuration file loaded with `loadconfig` is treated
   as a compile-time configuration.
@@ -17,7 +17,7 @@ defmodule Mix.Tasks.Loadconfig do
   application. Therefore there is no need to load those config
   files directly.
 
-  This task is automatically reenabled, so it can be called
+  This task is automatically re-enabled, so it can be called
   multiple times to load different configs.
   """
 
@@ -44,11 +44,16 @@ defmodule Mix.Tasks.Loadconfig do
   end
 
   @doc false
+  def read_compile() do
+    Mix.State.read_cache(__MODULE__) || []
+  end
+
+  @doc false
   # Loads compile-time configuration, they support imports, and are not deep merged.
   def load_compile(file) do
     {config, files} = Config.Reader.read_imports!(file, env: Mix.env(), target: Mix.target())
     Mix.ProjectStack.loaded_config(persist_apps(config, file), files)
-    config
+    Mix.State.write_cache(__MODULE__, config)
   end
 
   @doc false

@@ -52,8 +52,10 @@ defmodule Map do
       map.non_existing_key
       ** (KeyError) key :non_existing_key not found in: %{baz: "bong", foo: "bar"}
 
-  > Note: do not add parens when accessing fields, such as in `data.key()`.
-  > If parenthesis are used, Elixir will expect `data` to be an atom representing
+  > #### Avoid parentheses {: .warning}
+  >
+  > Do not add parentheses when accessing fields, such as in `data.key()`.
+  > If parentheses are used, Elixir will expect `data` to be an atom representing
   > a module and attempt to call the *function* `key/0` in it.
 
   The two syntaxes for accessing keys reveal the dual nature of maps. The `map[key]`
@@ -88,11 +90,17 @@ defmodule Map do
       %{1 => :one, 2 => :two, 3 => :three}
 
   Maps also support a specific update syntax to update the value stored under
-  *existing* atom keys:
+  *existing* keys. You can update using the atom keys syntax:
 
       iex> map = %{one: 1, two: 2}
       iex> %{map | one: "one"}
       %{one: "one", two: 2}
+
+  Or any other key:
+
+      iex> other_map = %{"three" => 3, "four" => 4}
+      iex> %{other_map | "three" => "three"}
+      %{"four" => 4, "three" => "three"}
 
   When a key that does not exist in the map is updated a `KeyError` exception will be raised:
 
@@ -116,6 +124,21 @@ defmodule Map do
   @type key :: any
   @type value :: any
   @compile {:inline, fetch: 2, fetch!: 2, get: 2, put: 3, delete: 2, has_key?: 2, replace!: 3}
+
+  @doc """
+  Builds a map from the given `keys` and the fixed `value`.
+
+  ## Examples
+
+      iex> Map.from_keys([1, 2, 3], :number)
+      %{1 => :number, 2 => :number, 3 => :number}
+
+  """
+  @doc since: "1.14.0"
+  @spec from_keys([key], value) :: map
+  def from_keys(keys, value) do
+    :maps.from_keys(keys, value)
+  end
 
   @doc """
   Returns all keys from `map`.
@@ -214,7 +237,24 @@ defmodule Map do
 
   """
   @spec new(Enumerable.t(), (term -> {key, value})) :: map
-  def new(enumerable, transform) when is_function(transform, 1) do
+  def new(enumerable, transform)
+  def new(%_{} = enumerable, transform), do: new_from_enum(enumerable, transform)
+  def new(%{} = map, transform), do: new_from_map(map, transform)
+  def new(enumerable, transform), do: new_from_enum(enumerable, transform)
+
+  defp new_from_map(map, transform) when is_function(transform, 1) do
+    iter = :maps.iterator(map)
+    next = :maps.next(iter)
+    :maps.from_list(do_map(next, transform))
+  end
+
+  defp do_map(:none, _fun), do: []
+
+  defp do_map({key, value, iter}, transform) do
+    [transform.({key, value}) | do_map(:maps.next(iter), transform)]
+  end
+
+  defp new_from_enum(enumerable, transform) when is_function(transform, 1) do
     enumerable
     |> Enum.map(transform)
     |> :maps.from_list()
@@ -318,7 +358,7 @@ defmodule Map do
   def replace(map, key, value) do
     case map do
       %{^key => _value} ->
-        put(map, key, value)
+        %{map | key => value}
 
       %{} ->
         map
@@ -351,6 +391,32 @@ defmodule Map do
   end
 
   @doc """
+  Replaces the value under `key` using the given function only if
+  `key` already exists in `map`.
+
+  In comparison to `replace/3`, this can be useful when it's expensive to calculate the value.
+
+  If `key` does not exist, the original map is returned unchanged.
+
+  ## Examples
+
+      iex> Map.replace_lazy(%{a: 1, b: 2}, :a, fn v -> v * 4 end)
+      %{a: 4, b: 2}
+
+      iex> Map.replace_lazy(%{a: 1, b: 2}, :c, fn v -> v * 4 end)
+      %{a: 1, b: 2}
+
+  """
+  @doc since: "1.14.0"
+  @spec replace_lazy(map, key, (existing_value :: value -> new_value :: value)) :: map
+  def replace_lazy(map, key, fun) when is_map(map) and is_function(fun, 1) do
+    case map do
+      %{^key => val} -> %{map | key => fun.(val)}
+      %{} -> map
+    end
+  end
+
+  @doc """
   Evaluates `fun` and puts the result under `key`
   in `map` unless `key` is already present.
 
@@ -371,7 +437,7 @@ defmodule Map do
       %{a: 1, b: 3}
 
   """
-  @spec put_new_lazy(map, key, (() -> value)) :: map
+  @spec put_new_lazy(map, key, (-> value)) :: map
   def put_new_lazy(map, key, fun) when is_function(fun, 0) do
     case map do
       %{^key => _value} ->
@@ -449,6 +515,8 @@ defmodule Map do
       nil
       iex> Map.get(%{a: 1}, :b, 3)
       3
+      iex> Map.get(%{a: nil}, :a, 1)
+      nil
 
   """
   @spec get(map, key, value) :: value
@@ -487,7 +555,7 @@ defmodule Map do
       13
 
   """
-  @spec get_lazy(map, key, (() -> value)) :: value
+  @spec get_lazy(map, key, (-> value)) :: value
   def get_lazy(map, key, fun) when is_function(fun, 0) do
     case map do
       %{^key => value} ->
@@ -546,7 +614,7 @@ defmodule Map do
   If you have a struct and you would like to merge a set of keys into the
   struct, do not use this function, as it would merge all keys on the right
   side into the struct, even if the key is not part of the struct. Instead,
-  use `Kernel.struct/2`.
+  use `struct/2`.
 
   Inlined by the compiler.
 
@@ -578,19 +646,7 @@ defmodule Map do
   """
   @spec merge(map, map, (key, value, value -> value)) :: map
   def merge(map1, map2, fun) when is_function(fun, 3) do
-    if map_size(map1) > map_size(map2) do
-      folder = fn key, val2, acc ->
-        update(acc, key, val2, fn val1 -> fun.(key, val1, val2) end)
-      end
-
-      :maps.fold(folder, map1, map2)
-    else
-      folder = fn key, val2, acc ->
-        update(acc, key, val2, fn val1 -> fun.(key, val2, val1) end)
-      end
-
-      :maps.fold(folder, map2, map1)
-    end
+    :maps.merge_with(fun, map1, map2)
   end
 
   @doc """
@@ -614,7 +670,7 @@ defmodule Map do
   def update(map, key, default, fun) when is_function(fun, 1) do
     case map do
       %{^key => value} ->
-        put(map, key, fun.(value))
+        %{map | key => fun.(value)}
 
       %{} ->
         put(map, key, default)
@@ -698,7 +754,7 @@ defmodule Map do
       {13, %{a: 1}}
 
   """
-  @spec pop_lazy(map, key, (() -> value)) :: {value, map}
+  @spec pop_lazy(map, key, (-> value)) :: {value, map}
   def pop_lazy(map, key, fun) when is_function(fun, 0) do
     case :maps.take(key, map) do
       {_, _} = tuple -> tuple
@@ -792,6 +848,50 @@ defmodule Map do
   end
 
   @doc """
+  Splits the `map` into two maps according to the given function `fun`.
+
+  `fun` receives each `{key, value}` pair in the `map` as its only argument. Returns
+  a tuple with the first map containing all the elements in `map` for which
+  applying `fun` returned a truthy value, and a second map with all the elements
+  for which applying `fun` returned a falsy value (`false` or `nil`).
+
+  ## Examples
+
+      iex> Map.split_with(%{a: 1, b: 2, c: 3, d: 4}, fn {_k, v} -> rem(v, 2) == 0 end)
+      {%{b: 2, d: 4}, %{a: 1, c: 3}}
+
+      iex> Map.split_with(%{a: 1, b: -2, c: 1, d: -3}, fn {k, _v} -> k in [:b, :d] end)
+      {%{b: -2, d: -3}, %{a: 1, c: 1}}
+
+      iex> Map.split_with(%{a: 1, b: -2, c: 1, d: -3}, fn {_k, v} -> v > 50 end)
+      {%{}, %{a: 1, b: -2, c: 1, d: -3}}
+
+      iex> Map.split_with(%{}, fn {_k, v} -> v > 50 end)
+      {%{}, %{}}
+
+  """
+  @doc since: "1.15.0"
+  @spec split_with(map, ({key, value} -> as_boolean(term))) :: {map, map}
+  def split_with(map, fun) when is_map(map) and is_function(fun, 1) do
+    iter = :maps.iterator(map)
+    next = :maps.next(iter)
+
+    do_split_with(next, [], [], fun)
+  end
+
+  defp do_split_with(:none, while_true, while_false, _fun) do
+    {:maps.from_list(while_true), :maps.from_list(while_false)}
+  end
+
+  defp do_split_with({key, value, iter}, while_true, while_false, fun) do
+    if fun.({key, value}) do
+      do_split_with(:maps.next(iter), [{key, value} | while_true], while_false, fun)
+    else
+      do_split_with(:maps.next(iter), while_true, [{key, value} | while_false], fun)
+    end
+  end
+
+  @doc """
   Updates `key` with the given function.
 
   If `key` is present in `map` then the existing value is passed to `fun` and its result is
@@ -810,7 +910,7 @@ defmodule Map do
   @spec update!(map, key, (existing_value :: value -> new_value :: value)) :: map
   def update!(map, key, fun) when is_function(fun, 1) do
     value = fetch!(map, key)
-    put(map, key, fun.(value))
+    %{map | key => fun.(value)}
   end
 
   @doc """
@@ -887,7 +987,7 @@ defmodule Map do
       {1, %{}}
 
   """
-  @spec get_and_update!(map, key, (value | nil -> {current_value, new_value :: value} | :pop)) ::
+  @spec get_and_update!(map, key, (value -> {current_value, new_value :: value} | :pop)) ::
           {current_value, map}
         when current_value: value
   def get_and_update!(map, key, fun) when is_function(fun, 1) do
@@ -895,7 +995,7 @@ defmodule Map do
 
     case fun.(value) do
       {get, update} ->
-        {get, put(map, key, update)}
+        {get, %{map | key => update}}
 
       :pop ->
         {value, delete(map, key)}
@@ -970,5 +1070,120 @@ defmodule Map do
   @deprecated "Use Kernel.map_size/1 instead"
   def size(map) do
     map_size(map)
+  end
+
+  @doc """
+  Returns a map containing only those pairs from `map`
+  for which `fun` returns a truthy value.
+
+  `fun` receives the key and value of each of the
+  elements in the map as a key-value pair.
+
+  See also `reject/2` which discards all elements where the
+  function returns a truthy value.
+
+  > #### Performance considerations {: .tip}
+  >
+  > If you find yourself doing multiple calls to `Map.filter/2`
+  > and `Map.reject/2` in a pipeline, it is likely more efficient
+  > to use `Enum.map/2` and `Enum.filter/2` instead and convert to
+  > a map at the end using `Map.new/1`.
+
+  ## Examples
+
+      iex> Map.filter(%{one: 1, two: 2, three: 3}, fn {_key, val} -> rem(val, 2) == 1 end)
+      %{one: 1, three: 3}
+
+  """
+  @doc since: "1.13.0"
+  @spec filter(map, ({key, value} -> as_boolean(term))) :: map
+  def filter(map, fun) when is_map(map) and is_function(fun, 1) do
+    iter = :maps.iterator(map)
+    next = :maps.next(iter)
+    :maps.from_list(do_filter(next, fun))
+  end
+
+  defp do_filter(:none, _fun), do: []
+
+  defp do_filter({key, value, iter}, fun) do
+    if fun.({key, value}) do
+      [{key, value} | do_filter(:maps.next(iter), fun)]
+    else
+      do_filter(:maps.next(iter), fun)
+    end
+  end
+
+  @doc """
+  Returns map excluding the pairs from `map` for which `fun` returns
+  a truthy value.
+
+  See also `filter/2`.
+
+  ## Examples
+
+      iex> Map.reject(%{one: 1, two: 2, three: 3}, fn {_key, val} -> rem(val, 2) == 1 end)
+      %{two: 2}
+
+  """
+  @doc since: "1.13.0"
+  @spec reject(map, ({key, value} -> as_boolean(term))) :: map
+  def reject(map, fun) when is_map(map) and is_function(fun, 1) do
+    iter = :maps.iterator(map)
+    next = :maps.next(iter)
+    :maps.from_list(do_reject(next, fun))
+  end
+
+  defp do_reject(:none, _fun), do: []
+
+  defp do_reject({key, value, iter}, fun) do
+    if fun.({key, value}) do
+      do_reject(:maps.next(iter), fun)
+    else
+      [{key, value} | do_reject(:maps.next(iter), fun)]
+    end
+  end
+
+  @doc """
+  Intersects two maps, returning a map with the common keys.
+
+  The values in the returned map are the values of the intersected keys in `map2`.
+
+  Inlined by the compiler.
+
+  ## Examples
+
+      iex> Map.intersect(%{a: 1, b: 2}, %{b: "b", c: "c"})
+      %{b: "b"}
+
+  """
+  @doc since: "1.15.0"
+  @spec intersect(map, map) :: map
+  defdelegate intersect(map1, map2), to: :maps
+
+  @doc """
+  Intersects two maps, returning a map with the common keys and resolving conflicts through a function.
+
+  The given function will be invoked when there are duplicate keys; its
+  arguments are `key` (the duplicate key), `value1` (the value of `key` in
+  `map1`), and `value2` (the value of `key` in `map2`). The value returned by
+  `fun` is used as the value under `key` in the resulting map.
+
+  ## Examples
+
+      iex> Map.intersect(%{a: 1, b: 2}, %{b: 2, c: 3}, fn _k, v1, v2 ->
+      ...>   v1 + v2
+      ...> end)
+      %{b: 4}
+  """
+  @doc since: "1.15.0"
+  @spec intersect(map, map, (key, value, value -> value)) :: map
+  def intersect(map1, map2, fun) when is_function(fun, 3) do
+    :maps.intersect_with(fun, map1, map2)
+  end
+
+  @doc false
+  @deprecated "Use Map.new/2 instead (invoke Map.from_struct/1 before if you have a struct)"
+  def map(map, fun) when is_map(map) do
+    :maps.map(fn k, v -> fun.({k, v}) end, map)
   end
 end

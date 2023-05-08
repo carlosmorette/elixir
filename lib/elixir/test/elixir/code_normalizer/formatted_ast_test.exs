@@ -15,11 +15,14 @@ defmodule Code.Normalizer.FormatterASTTest do
     good = String.trim(good)
 
     to_quoted_opts =
-      [
-        literal_encoder: &{:ok, {:__block__, &2, [&1]}},
-        token_metadata: true,
-        unescape: false
-      ] ++ opts
+      Keyword.merge(
+        [
+          literal_encoder: &{:ok, {:__block__, &2, [&1]}},
+          token_metadata: true,
+          unescape: false
+        ],
+        opts
+      )
 
     {quoted, comments} = Code.string_to_quoted_with_comments!(good, to_quoted_opts)
 
@@ -112,6 +115,7 @@ defmodule Code.Normalizer.FormatterASTTest do
 
     test "does not reformat aliases" do
       assert_same ~S[:"Elixir.String"]
+      assert_same ~S[:"Elixir"]
     end
 
     test "quoted operators" do
@@ -158,6 +162,12 @@ defmodule Code.Normalizer.FormatterASTTest do
 
     test "with escapes and interpolation" do
       assert_same ~S["one\n\"#{2}\"\nthree"]
+    end
+  end
+
+  describe "lists" do
+    test "on module attribute" do
+      assert_same ~S"@foo [1]"
     end
   end
 
@@ -342,6 +352,25 @@ defmodule Code.Normalizer.FormatterASTTest do
       @type foo :: a when b: :c
       """
     end
+
+    test "last tuple element as keyword list keeps its format" do
+      assert_same ~S"{:wrapped, [opt1: true, opt2: false]}"
+      assert_same ~S"{:unwrapped, opt1: true, opt2: false}"
+      assert_same ~S"{:wrapped, 1, [opt1: true, opt2: false]}"
+      assert_same ~S"{:unwrapped, 1, opt1: true, opt2: false}"
+    end
+
+    test "on module attribute" do
+      assert_same ~S"""
+      @foo a: b,
+           c: d
+      """
+
+      assert_same ~S"@foo [
+        a: b,
+        c: d
+      ]"
+    end
   end
 
   describe "preserves user choice on parenthesis" do
@@ -457,6 +486,51 @@ defmodule Code.Normalizer.FormatterASTTest do
       """
     end
 
+    test "handles comments with unescaped literal" do
+      assert_same """
+                  # before
+                  Mix.install([:foo])
+                  # after
+                  """,
+                  literal_encoder: fn literal, _ -> {:ok, literal} end
+
+      assert_same """
+                  # before
+                  Mix.install([1 + 2, :foo])
+                  # after
+                  """,
+                  literal_encoder: fn literal, _ -> {:ok, literal} end
+
+      assert_same """
+                  # before
+                  Mix.install([:foo, 1 + 2])
+                  # after
+                  """,
+                  literal_encoder: fn literal, _ -> {:ok, literal} end
+
+      assert_same """
+                  block do
+                    # before 1
+                    1 + 1
+
+                    # before 2
+                    2 + 2
+                  end
+                  """,
+                  literal_encoder: fn literal, _ -> {:ok, literal} end
+
+      assert_same """
+                  block do
+                    # before 1
+                    Mix.install([1 + 1])
+
+                    # before 2
+                    Mix.install([2 + 2])
+                  end
+                  """,
+                  literal_encoder: fn literal, _ -> {:ok, literal} end
+    end
+
     test "before and after expressions with newlines" do
       assert_same """
       # before comment
@@ -508,6 +582,13 @@ defmodule Code.Normalizer.FormatterASTTest do
         ]
       end
       """
+    end
+
+    test "keyword literals with variable values" do
+      assert_same(~S"""
+      foo = foo()
+      [foo: foo]
+      """)
     end
   end
 end

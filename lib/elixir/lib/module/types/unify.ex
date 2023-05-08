@@ -43,12 +43,12 @@ defmodule Module.Types.Unify do
     {:ok, same, context}
   end
 
-  def unify(type, {:var, var}, stack, context) do
-    unify_var(var, type, stack, context, _var_source = false)
-  end
-
   def unify({:var, var}, type, stack, context) do
     unify_var(var, type, stack, context, _var_source = true)
+  end
+
+  def unify(type, {:var, var}, stack, context) do
+    unify_var(var, type, stack, context, _var_source = false)
   end
 
   def unify({:tuple, n, sources}, {:tuple, n, targets}, stack, context) do
@@ -128,30 +128,10 @@ defmodule Module.Types.Unify do
           {:ok, {:var, var}, context}
         end
 
-      %{^var => {:var, new_var} = var_type} ->
-        unify_result =
-          if var_source? do
-            unify(var_type, type, stack, context)
-          else
-            unify(type, var_type, stack, context)
-          end
-
-        case unify_result do
-          {:ok, type, context} ->
-            {:ok, type, context}
-
-          {:error, {type, reason, %{traces: error_traces} = error_context}} ->
-            old_var_traces = Map.get(context.traces, new_var, [])
-            new_var_traces = Map.get(error_traces, new_var, [])
-            add_var_traces = Enum.drop(new_var_traces, -length(old_var_traces))
-
-            error_traces =
-              error_traces
-              |> Map.update(var, add_var_traces, &(add_var_traces ++ &1))
-              |> Map.put(new_var, old_var_traces)
-
-            {:error, {type, reason, %{error_context | traces: error_traces}}}
-        end
+      %{^var => {:var, _} = var_type} ->
+        # Do not recursively traverse type vars for now
+        # to avoid pathological cases related to performance.
+        {:ok, var_type, context}
 
       %{^var => var_type} ->
         # Only add trace if the variable wasn't already "expanded"
@@ -379,11 +359,11 @@ defmodule Module.Types.Unify do
   end
 
   @doc """
-  Resolves a variable raising if it is unbound.
+  Maybe resolves a variable.
   """
   def resolve_var({:var, var}, context) do
     case context.types do
-      %{^var => :unbound} -> raise "cannot resolve unbound var"
+      %{^var => :unbound} -> {:var, var}
       %{^var => type} -> resolve_var(type, context)
     end
   end
@@ -779,75 +759,103 @@ defmodule Module.Types.Unify do
   end
 
   # TODO: Figure out function expansion
-  # TODO: Flatten across type variables
 
   @doc """
   Expand unions so that all unions are at the top level.
 
       {integer() | float()} => {integer()} | {float()}
   """
-  def flatten_union({:union, types}) do
-    Enum.flat_map(types, &flatten_union/1)
+  def flatten_union({:union, types}, context) do
+    Enum.flat_map(types, &flatten_union(&1, context))
   end
 
-  def flatten_union(type) do
-    List.wrap(do_flatten_union(type))
+  def flatten_union(type, context) do
+    List.wrap(do_flatten_union(type, context))
   end
 
-  def do_flatten_union({:tuple, num, types}) do
-    flatten_union_tuple(types, num, [])
+  def do_flatten_union({:tuple, num, types}, context) do
+    flatten_union_tuple(types, num, context, [])
   end
 
-  def do_flatten_union({:list, type}) do
-    case do_flatten_union(type) do
+  def do_flatten_union({:list, type}, context) do
+    case do_flatten_union(type, context) do
       {:union, union_types} -> Enum.map(union_types, &{:list, &1})
       _type -> [{:list, type}]
     end
   end
 
-  def do_flatten_union({:map, pairs}) do
-    flatten_union_map(pairs, [])
+  def do_flatten_union({:map, pairs}, context) do
+    flatten_union_map(pairs, context, [])
   end
 
-  def do_flatten_union(type) do
+  def do_flatten_union({:var, var}, context) do
+    if looping_var?(var, context, []) do
+      {:var, var}
+    else
+      case context.types do
+        %{^var => :unbound} -> {:var, var}
+        %{^var => {:union, types}} -> Enum.map(types, &do_flatten_union(&1, context))
+        %{^var => type} -> do_flatten_union(type, context)
+      end
+    end
+  end
+
+  def do_flatten_union(type, _context) do
     type
   end
 
-  defp flatten_union_tuple([type | types], num, acc) do
-    case do_flatten_union(type) do
+  defp flatten_union_tuple([type | types], num, context, acc) do
+    case do_flatten_union(type, context) do
       {:union, union_types} ->
-        Enum.flat_map(union_types, &flatten_union_tuple(types, num, [&1 | acc]))
+        Enum.flat_map(union_types, &flatten_union_tuple(types, num, context, [&1 | acc]))
 
       type ->
-        flatten_union_tuple(types, num, [type | acc])
+        flatten_union_tuple(types, num, context, [type | acc])
     end
   end
 
-  defp flatten_union_tuple([], num, acc) do
+  defp flatten_union_tuple([], num, _context, acc) do
     [{:tuple, num, Enum.reverse(acc)}]
   end
 
-  defp flatten_union_map([{kind, key, value} | pairs], acc) do
-    case do_flatten_union(key) do
+  defp flatten_union_map([{kind, key, value} | pairs], context, acc) do
+    case do_flatten_union(key, context) do
       {:union, union_types} ->
-        Enum.flat_map(union_types, &flatten_union_map_value(kind, &1, value, pairs, acc))
+        Enum.flat_map(union_types, &flatten_union_map_value(kind, &1, value, pairs, context, acc))
 
       type ->
-        flatten_union_map_value(kind, type, value, pairs, acc)
+        flatten_union_map_value(kind, type, value, pairs, context, acc)
     end
   end
 
-  defp flatten_union_map([], acc) do
+  defp flatten_union_map([], _context, acc) do
     [{:map, Enum.reverse(acc)}]
   end
 
-  defp flatten_union_map_value(kind, key, value, pairs, acc) do
-    case do_flatten_union(value) do
+  defp flatten_union_map_value(kind, key, value, pairs, context, acc) do
+    case do_flatten_union(value, context) do
       {:union, union_types} ->
-        Enum.flat_map(union_types, &flatten_union_map(pairs, [{kind, key, &1} | acc]))
+        Enum.flat_map(union_types, &flatten_union_map(pairs, context, [{kind, key, &1} | acc]))
 
       value ->
-        flatten_union_map(pairs, [{kind, key, value} | acc])
+        flatten_union_map(pairs, context, [{kind, key, value} | acc])
+    end
+  end
+
+  defp looping_var?(var, context, parents) do
+    case context.types do
+      %{^var => :unbound} ->
+        false
+
+      %{^var => {:var, type}} ->
+        if var in parents do
+          true
+        else
+          looping_var?(type, context, [var | parents])
+        end
+
+      %{^var => _type} ->
+        false
     end
   end
 

@@ -14,9 +14,9 @@ defmodule Mix.Tasks.App.StartTest do
   end
 
   test "compiles and starts the project" do
-    Mix.Project.push(AppStartSample)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(AppStartSample)
+
       assert_raise Mix.Error, fn ->
         Mix.Task.run("app.start", ["--no-compile"])
       end
@@ -30,7 +30,7 @@ defmodule Mix.Tasks.App.StartTest do
       assert File.regular?("_build/dev/lib/app_start_sample/ebin/Elixir.A.beam")
       assert File.regular?("_build/dev/lib/app_start_sample/ebin/app_start_sample.app")
 
-      assert :code.is_loaded(A)
+      assert Code.loaded?(A)
       refute List.keyfind(Application.started_applications(), :app_start_sample, 0)
       assert List.keyfind(Application.started_applications(), :logger, 0)
       purge([A])
@@ -38,7 +38,7 @@ defmodule Mix.Tasks.App.StartTest do
       Mix.Task.reenable("app.config")
       Mix.Task.reenable("app.start")
       Mix.Task.run("app.start", [])
-      refute :code.is_loaded(A)
+      refute Code.loaded?(A)
       assert List.keyfind(Application.started_applications(), :app_start_sample, 0)
       assert List.keyfind(Application.started_applications(), :logger, 0)
     end)
@@ -46,7 +46,7 @@ defmodule Mix.Tasks.App.StartTest do
 
   describe "unit tests" do
     test "start does nothing if no apps are given" do
-      assert Mix.Tasks.App.Start.start([], :temporary) == :ok
+      assert Mix.Tasks.App.Start.start([], :temporary, :serial) == :ok
     end
 
     test "allows type to be configured" do
@@ -73,9 +73,9 @@ defmodule Mix.Tasks.App.StartTest do
     end
 
     test "start points to report on error", context do
-      Mix.Project.push(ReturnSample)
-
       in_tmp(context.test, fn ->
+        Mix.Project.push(ReturnSample)
+
         Process.put(:application_definition, mod: {ReturnApp, {:error, :bye}})
         Mix.Tasks.Compile.run([])
 
@@ -85,15 +85,15 @@ defmodule Mix.Tasks.App.StartTest do
             "returned an error: :bye"
 
         assert_raise Mix.Error, message, fn ->
-          Mix.Tasks.App.Start.start([:return_sample], :temporary)
+          Mix.Tasks.App.Start.start([:return_sample], :temporary, :serial)
         end
       end)
     end
 
     test "start points to report on exception error", context do
-      Mix.Project.push(ReturnSample)
-
       in_tmp(context.test, fn ->
+        Mix.Project.push(ReturnSample)
+
         mod = {ReturnApp, {:error, {:badarg, [{ReturnApp, :start, 2, []}]}}}
         Process.put(:application_definition, mod: mod)
         Mix.Tasks.Compile.run([])
@@ -106,15 +106,15 @@ defmodule Mix.Tasks.App.StartTest do
             "        Mix.Tasks.App.StartTest.ReturnApp.start/2"
 
         assert_raise Mix.Error, message, fn ->
-          Mix.Tasks.App.Start.start([:return_sample], :temporary)
+          Mix.Tasks.App.Start.start([:return_sample], :temporary, :serial)
         end
       end)
     end
 
     test "start points to report on bad return", context do
-      Mix.Project.push(ReturnSample)
-
       in_tmp(context.test, fn ->
+        Mix.Project.push(ReturnSample)
+
         Process.put(:application_definition, mod: {ReturnApp, :bad})
         Mix.Tasks.Compile.run([])
 
@@ -124,7 +124,7 @@ defmodule Mix.Tasks.App.StartTest do
             "returned a bad value: :bad"
 
         assert_raise Mix.Error, message, fn ->
-          Mix.Tasks.App.Start.start([:return_sample], :temporary)
+          Mix.Tasks.App.Start.start([:return_sample], :temporary, :serial)
         end
       end)
     end
@@ -146,9 +146,9 @@ defmodule Mix.Tasks.App.StartTest do
     end
 
     test "start points to report on exit", context do
-      Mix.Project.push(ExitSample)
-
       in_tmp(context.test, fn ->
+        Mix.Project.push(ExitSample)
+
         Process.put(:application_definition, mod: {ExitApp, :bye})
         Mix.Tasks.Compile.run([])
 
@@ -157,15 +157,15 @@ defmodule Mix.Tasks.App.StartTest do
             "Mix.Tasks.App.StartTest.ExitApp.start(:normal, :bye)\n" <> "    ** (EXIT) :bye"
 
         assert_raise Mix.Error, message, fn ->
-          Mix.Tasks.App.Start.start([:exit_sample], :temporary)
+          Mix.Tasks.App.Start.start([:exit_sample], :temporary, :serial)
         end
       end)
     end
 
     test "start points to report on normal exit", context do
-      Mix.Project.push(ExitSample)
-
       in_tmp(context.test, fn ->
+        Mix.Project.push(ExitSample)
+
         Process.put(:application_definition, mod: {ExitApp, :normal})
         Mix.Tasks.Compile.run([])
 
@@ -174,7 +174,7 @@ defmodule Mix.Tasks.App.StartTest do
             "Mix.Tasks.App.StartTest.ExitApp.start(:normal, :normal)\n" <> "    ** (EXIT) normal"
 
         assert_raise Mix.Error, message, fn ->
-          Mix.Tasks.App.Start.start([:exit_sample], :temporary)
+          Mix.Tasks.App.Start.start([:exit_sample], :temporary, :serial)
         end
       end)
     end

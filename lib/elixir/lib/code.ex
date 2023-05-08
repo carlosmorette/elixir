@@ -3,8 +3,9 @@ defmodule Code do
   Utilities for managing code compilation, code evaluation, and code loading.
 
   This module complements Erlang's [`:code` module](`:code`)
-  to add behaviour which is specific to Elixir. Almost all of the functions in this module
-  have global side effects on the behaviour of Elixir.
+  to add behaviour which is specific to Elixir. For functions to
+  manipulate Elixir's AST (rather than evaluating it), see the
+  `Macro` module.
 
   ## Working with files
 
@@ -57,7 +58,7 @@ defmodule Code do
   it can't even be loaded.
 
   When invoked, `ensure_compiled/1` and `ensure_compiled!/1` halt the
-  compilation of the caller until the module becomes available. Note
+  compilation of the caller until the module becomes available. Note that
   the distinction between `ensure_compiled/1` and `ensure_compiled!/1`
   is important: if you are using `ensure_compiled!/1`, you are
   indicating to the compiler that you can only continue if said module
@@ -87,7 +88,7 @@ defmodule Code do
 
   ## Compilation tracers
 
-  Elixir supports compilation tracers, which allows modules to observe constructs
+  Elixir supports compilation tracers, which allow modules to observe constructs
   handled by the Elixir compiler when compiling files. A tracer is a module
   that implements the `trace/2` function. The function receives the event name
   as first argument and `Macro.Env` as second and it must return `:ok`. It is
@@ -99,10 +100,15 @@ defmodule Code do
   following events are available to tracers:
 
     * `:start` - (since v1.11.0) invoked whenever the compiler starts to trace
-      a new lexical context, such as a new file. Keep in mind the compiler runs
-      in parallel, so multiple files may invoke `:start` and run at the same
-      time. The value of the `lexical_tracker` of the macro environment, albeit
-      opaque, can be used to uniquely identify the environment.
+      a new lexical context. A lexical context is started when compiling a new
+      file or when defining a module within a function. Note evaluated code
+      does not start a new lexical context (because they don't track unused
+      aliases, imports, etc) but defining a module inside evaluated code will.
+
+      Note this event may be emitted in parallel, where multiple files/modules
+      invoke `:start` and run at the same time. The value of the `lexical_tracker`
+      of the macro environment, albeit opaque, can be used to uniquely identify
+      the environment.
 
     * `:stop` - (since v1.11.0) invoked whenever the compiler stops tracing a
       new lexical context, such as a new file.
@@ -114,7 +120,8 @@ defmodule Code do
       `{:imported_macro, meta, module, name, arity}` - traced whenever an
       imported function or macro is invoked. `meta` is the call AST metadata,
       `module` is the module the import is from, followed by the `name` and `arity`
-      of the imported function/macro.
+      of the imported function/macro. A :remote_function/:remote_macro event
+      may still be emitted for the imported module/name/arity.
 
     * `{:alias, meta, alias, as, opts}` - traced whenever `alias` is aliased
       to `as`. `meta` is the alias AST metadata and `opts` are the alias options.
@@ -129,6 +136,8 @@ defmodule Code do
 
     * `{:require, meta, module, opts}` - traced whenever `module` is required.
       `meta` is the require AST metadata and `opts` are the require options.
+      If the `meta` option contains the `:from_macro`, then module was called
+      from within a macro and therefore must be treated as a compile-time dependency.
 
     * `{:struct_expansion, meta, module, keys}` - traced whenever `module`'s struct
       is expanded. `meta` is the struct AST metadata and `keys` are the keys being
@@ -149,11 +158,13 @@ defmodule Code do
       of keys to traverse in the application environment and `return` is either
       `{:ok, value}` or `:error`.
 
-    * `{:on_module, bytecode, :none}` - (since v1.11.0) traced whenever a module
+    * `{:on_module, bytecode, _ignore}` - (since v1.13.0) traced whenever a module
       is defined. This is equivalent to the `@after_compile` callback and invoked
       after any `@after_compile` in the given module. The third element is currently
       `:none` but it may provide more metadata in the future. It is best to ignore
-      it at the moment.
+      it at the moment. Note that `Module` functions expecting not yet compiled modules
+      (such as `Module.definitions_in/1`) are still available at the time this event
+      is emitted.
 
   The `:tracers` compiler option can be combined with the `:parser_options`
   compiler option to enrich the metadata of the traced events above.
@@ -176,7 +187,7 @@ defmodule Code do
   """
 
   @typedoc """
-  A list with all variable bindings.
+  A list with all variables and their values.
 
   The binding keys are usually atoms, but they may be a tuple for variables
   defined in a different context.
@@ -186,6 +197,7 @@ defmodule Code do
   @boolean_compiler_options [
     :docs,
     :debug_info,
+    :ignore_already_consolidated,
     :ignore_module_conflict,
     :relative_paths,
     :warnings_as_errors
@@ -230,6 +242,8 @@ defmodule Code do
   calling this function only removes them from the list,
   allowing them to be required again.
 
+  The list of files is managed per Erlang VM node.
+
   ## Examples
 
       # Require EEx test code
@@ -256,13 +270,15 @@ defmodule Code do
   end
 
   @doc """
-  Appends a path to the end of the Erlang VM code path list.
+  Appends a path to the Erlang VM code path list.
 
   This is the list of directories the Erlang VM uses for
-  finding module code.
+  finding module code. The list of files is managed per Erlang
+  VM node.
 
   The path is expanded with `Path.expand/1` before being appended.
-  If this path does not exist, an error is returned.
+  It requires the path to exist. Returns a boolean indicating if
+  the path was successfully added.
 
   ## Examples
 
@@ -270,22 +286,30 @@ defmodule Code do
       #=> true
 
       Code.append_path("/does_not_exist")
-      #=> {:error, :bad_directory}
+      #=> false
+
+  ## Options
+
+    * `:cache` - (since v1.15.0) when true, the code path is cached
+      the first time it is traversed in order to reduce file system
+      operations. It requires Erlang/OTP 26, otherwise it is a no-op.
 
   """
-  @spec append_path(Path.t()) :: true | {:error, :bad_directory}
-  def append_path(path) do
-    :code.add_pathz(to_charlist(Path.expand(path)))
+  @spec append_path(Path.t(), cache: boolean()) :: true | false
+  def append_path(path, opts \\ []) do
+    apply(:code, :add_pathz, [to_charlist(Path.expand(path)) | cache(opts)]) == true
   end
 
   @doc """
-  Prepends a path to the beginning of the Erlang VM code path list.
+  Prepends a path to the Erlang VM code path list.
 
-  This is the list of directories the Erlang VM uses for finding
-  module code.
+  This is the list of directories the Erlang VM uses for
+  finding module code. The list of files is managed per Erlang
+  VM node.
 
   The path is expanded with `Path.expand/1` before being prepended.
-  If this path does not exist, an error is returned.
+  It requires the path to exist. Returns a boolean indicating if
+  the path was successfully added.
 
   ## Examples
 
@@ -293,17 +317,91 @@ defmodule Code do
       #=> true
 
       Code.prepend_path("/does_not_exist")
-      #=> {:error, :bad_directory}
+      #=> false
+
+  ## Options
+
+    * `:cache` - (since v1.15.0) when true, the code path is cached
+      the first time it is traversed in order to reduce file system
+      operations. It requires Erlang/OTP 26, otherwise it is a no-op.
 
   """
-  @spec prepend_path(Path.t()) :: true | {:error, :bad_directory}
-  def prepend_path(path) do
-    :code.add_patha(to_charlist(Path.expand(path)))
+  @spec prepend_path(Path.t(), cache: boolean()) :: boolean()
+  def prepend_path(path, opts \\ []) do
+    apply(:code, :add_patha, [to_charlist(Path.expand(path)) | cache(opts)]) == true
   end
 
   @doc """
-  Deletes a path from the Erlang VM code path list. This is the list of
-  directories the Erlang VM uses for finding module code.
+  Prepends a list of `paths` to the Erlang VM code path list.
+
+  This is the list of directories the Erlang VM uses for
+  finding module code. The list of files is managed per Erlang
+  VM node.
+
+  All paths are expanded with `Path.expand/1` before being prepended.
+  Only existing paths are prepended. This function always returns `:ok`,
+  regardless of how many paths were prepended. Use `prepend_path/1`
+  if you need more control.
+
+  ## Examples
+
+      Code.prepend_paths([".", "/does_not_exist"])
+      #=> :ok
+
+  ## Options
+
+    * `:cache` - when true, the code path is cached the first time
+      it is traversed in order to reduce file system operations.
+      It requires Erlang/OTP 26, otherwise it is a no-op.
+  """
+  @doc since: "1.15.0"
+  @spec prepend_paths([Path.t()], cache: boolean()) :: :ok
+  def prepend_paths(paths, opts \\ []) when is_list(paths) do
+    apply(:code, :add_pathsa, [Enum.map(paths, &to_charlist(Path.expand(&1))) | cache(opts)])
+  end
+
+  @doc """
+  Appends a list of `paths` to the Erlang VM code path list.
+
+  This is the list of directories the Erlang VM uses for
+  finding module code. The list of files is managed per Erlang
+  VM node.
+
+  All paths are expanded with `Path.expand/1` before being appended.
+  Only existing paths are appended. This function always returns `:ok`,
+  regardless of how many paths were appended. Use `append_path/1`
+  if you need more control.
+
+  ## Examples
+
+      Code.append_paths([".", "/does_not_exist"])
+      #=> :ok
+
+  ## Options
+
+    * `:cache` - when true, the code path is cached the first time
+      it is traversed in order to reduce file system operations.
+      It requires Erlang/OTP 26, otherwise it is a no-op.
+  """
+  @doc since: "1.15.0"
+  @spec append_paths([Path.t()], cache: boolean()) :: :ok
+  def append_paths(paths, opts \\ []) when is_list(paths) do
+    apply(:code, :add_pathsz, [Enum.map(paths, &to_charlist(Path.expand(&1))) | cache(opts)])
+  end
+
+  defp cache(opts) do
+    if function_exported?(:code, :add_path, 2) do
+      if opts[:cache], do: [:cache], else: [:nocache]
+    else
+      []
+    end
+  end
+
+  @doc """
+  Deletes a path from the Erlang VM code path list.
+
+  This is the list of directories the Erlang VM uses for finding
+  module code. The list of files is managed per Erlang VM node.
 
   The path is expanded with `Path.expand/1` before being deleted. If the
   path does not exist, this function returns `false`.
@@ -320,13 +418,39 @@ defmodule Code do
   """
   @spec delete_path(Path.t()) :: boolean
   def delete_path(path) do
-    :code.del_path(to_charlist(Path.expand(path)))
+    case :code.del_path(to_charlist(Path.expand(path))) do
+      result when is_boolean(result) ->
+        result
+
+      {:error, :bad_name} ->
+        raise ArgumentError,
+              "invalid argument #{inspect(path)}"
+    end
+  end
+
+  @doc """
+  Deletes a list of paths from the Erlang VM code path list.
+
+  This is the list of directories the Erlang VM uses for finding
+  module code. The list of files is managed per Erlang VM node.
+
+  The path is expanded with `Path.expand/1` before being deleted. If the
+  path does not exist, this function returns `false`.
+  """
+  @doc since: "1.15.0"
+  @spec delete_paths([Path.t()]) :: :ok
+  def delete_paths(paths) when is_list(paths) do
+    for path <- paths do
+      _ = :code.del_path(to_charlist(Path.expand(path)))
+    end
+
+    :ok
   end
 
   @doc """
   Evaluates the contents given by `string`.
 
-  The `binding` argument is a list of variable bindings.
+  The `binding` argument is a list of all variables and their values.
   The `opts` argument is a keyword list of environment options.
 
   **Warning**: `string` can be any Elixir code and will be executed with
@@ -343,39 +467,16 @@ defmodule Code do
 
     * `:line` - the line on which the script starts
 
-  Additionally, the following scope values can be configured:
-
-    * `:aliases` - a list of tuples with the alias and its target
-
-    * `:requires` - a list of modules required
-
-    * `:functions` - a list of tuples where the first element is a module
-      and the second a list of imported function names and arity; the list
-      of function names and arity must be sorted
-
-    * `:macros` - a list of tuples where the first element is a module
-      and the second a list of imported macro names and arity; the list
-      of function names and arity must be sorted
-
-    * `:tracers` - set the compilation tracers to be used during code
-      evaluation
-
-  Note that setting any of the values above overrides Elixir's default
-  values. For example, setting `:requires` to `[]` will no longer
-  automatically require the `Kernel` module. In the same way setting
-  `:macros` will no longer auto-import `Kernel` macros like `Kernel.if/2`,
-  `Kernel.SpecialForms.case/2`, and so on.
-
-  On the other hand, if the evaluated code requires or compiles another
-  file, the settings given to this function will not apply to said files.
+  Additionally, you may also pass an environment as second argument,
+  so the evaluation happens within that environment.
 
   Returns a tuple of the form `{value, binding}`, where `value` is the value
   returned from evaluating `string`. If an error occurs while evaluating
-  `string` an exception will be raised.
+  `string`, an exception will be raised.
 
-  `binding` is a list with all variable bindings after evaluating `string`.
-  The binding keys are usually atoms, but they may be a tuple for variables
-  defined in a different context.
+  `binding` is a list with all variable names and their values after evaluating
+  `string`. The binding keys are usually atoms, but they may be a tuple for variables
+  defined in a different context. The names are in no particular order.
 
   ## Examples
 
@@ -412,19 +513,24 @@ defmodule Code do
   def eval_string(string, binding \\ [], opts \\ [])
 
   def eval_string(string, binding, %Macro.Env{} = env) do
-    eval_string_with_error_handling(string, binding, Map.to_list(env))
+    validated_eval_string(string, binding, env)
   end
 
   def eval_string(string, binding, opts) when is_list(opts) do
-    validate_eval_opts(opts)
-    eval_string_with_error_handling(string, binding, opts)
+    validated_eval_string(string, binding, opts)
   end
 
-  defp eval_string_with_error_handling(string, binding, opts) do
-    %{line: line, file: file} = env = :elixir.env_for_eval(opts)
+  defp validated_eval_string(string, binding, opts_or_env) do
+    %{line: line, file: file} = env = env_for_eval(opts_or_env)
     forms = :elixir.string_to_quoted!(to_charlist(string), line, 1, file, [])
-    {value, binding, _env} = :elixir.eval_forms(forms, binding, env)
+    {value, binding, _env} = eval_verify(:eval_forms, [forms, binding, env])
     {value, binding}
+  end
+
+  defp eval_verify(fun, args) do
+    Module.ParallelChecker.verify(fn ->
+      apply(:elixir, fun, args)
+    end)
   end
 
   @doc ~S"""
@@ -453,18 +559,34 @@ defmodule Code do
       and this option augments this list.
 
     * `:force_do_end_blocks` (since v1.9.0) - when `true`, converts all
-      inline usages of `do: ...`,  `else: ...` and friends into `do/end`
+      inline usages of `do: ...`,  `else: ...` and friends into `do`-`end`
       blocks. Defaults to `false`. Note that this option is convergent:
       once you set it to `true`, **all keywords** will be converted.
-      If you set it to `false` later on, `do/end` blocks won't be
+      If you set it to `false` later on, `do`-`end` blocks won't be
       converted back to keywords.
+
+    * `:normalize_bitstring_modifiers` (since v1.14.0) - when `true`,
+      removes unnecessary parentheses in known bitstring
+      [modifiers](`<<>>/1`), for example `<<foo::binary()>>`
+      becomes `<<foo::binary>>`, or adds parentheses for custom
+      modifiers, where `<<foo::custom_type>>` becomes `<<foo::custom_type()>>`.
+      Defaults to `true`. This option changes the AST.
+
+    * `:normalize_charlists_as_sigils` (since v1.15.0) - when `true`,
+      formats charlists as [`~c`](`Kernel.sigil_c/2`) sigils, for example
+      `'foo'` becomes `~c"foo"`.
+      Defaults to `true`. This option changes the AST.
 
   ## Design principles
 
   The formatter was designed under three principles.
 
-  First, the formatter never changes the semantics of the code by
-  default. This means the input AST and the output AST are equivalent.
+  First, the formatter never changes the semantics of the code.
+  This means the input AST and the output AST are almost always equivalent.
+  The only cases where the formatter will change the AST is when the input AST
+  would cause *compiler warnings* and the output AST won't. The cases where
+  the formatter changes the AST can be disabled through formatting options
+  if desired.
 
   The second principle is to provide as little configuration as possible.
   This eases the formatter adoption by removing contention points while
@@ -597,8 +719,8 @@ defmodule Code do
   The formatter respects the input format in some cases. Those are
   listed below:
 
-    * Insignificant digits in numbers are kept as is. The formatter
-      however always inserts underscores for decimal numbers with more
+    * Insignificant digits in numbers are kept as is. The formatter,
+      however, always inserts underscores for decimal numbers with more
       than 5 digits and converts hexadecimal digits to uppercase
 
     * Strings, charlists, atoms and sigils are kept as is. No character
@@ -610,7 +732,7 @@ defmodule Code do
       line before and after and 2) empty lines are always squeezed
       together into a single empty line
 
-    * The choice between `:do` keyword and `do/end` blocks is left
+    * The choice between `:do` keyword and `do`-`end` blocks is left
       to the user
 
     * Lists, tuples, bitstrings, maps, structs and function calls will be
@@ -659,7 +781,7 @@ defmodule Code do
   Elixir has two syntaxes for function calls. With parens and no parens.
   By default, Elixir will add parens to all calls except for:
 
-    1. calls that have do/end blocks
+    1. calls that have `do`-`end` blocks
     2. local calls without parens where the name and arity of the local
        call is also listed under `:locals_without_parens` (except for
        calls with arity 0, where the compiler always require parens)
@@ -753,18 +875,13 @@ defmodule Code do
         unescape: false,
         warn_on_unnecessary_quotes: false,
         literal_encoder: &{:ok, {:__block__, &2, [&1]}},
-        token_metadata: true
+        token_metadata: true,
+        emit_warnings: false
       ] ++ opts
 
     {forms, comments} = string_to_quoted_with_comments!(string, to_quoted_opts)
-
-    to_algebra_opts =
-      [
-        comments: comments
-      ] ++ opts
-
+    to_algebra_opts = [comments: comments] ++ opts
     doc = Code.Formatter.to_algebra(forms, to_algebra_opts)
-
     Inspect.Algebra.format(doc, line_length)
   end
 
@@ -790,7 +907,7 @@ defmodule Code do
   Macro arguments are typically transformed by unquoting them into the
   returned quoted expressions (instead of evaluated).
 
-  See `eval_string/3` for a description of `binding` and options.
+  See `eval_string/3` for a description of `binding` and `opts`.
 
   ## Examples
 
@@ -813,62 +930,67 @@ defmodule Code do
 
   """
   @spec eval_quoted(Macro.t(), binding, Macro.Env.t() | keyword) :: {term, binding}
-  def eval_quoted(quoted, binding \\ [], opts \\ [])
+  def eval_quoted(quoted, binding \\ [], env_or_opts \\ []) do
+    {value, binding, _env} =
+      eval_verify(:eval_quoted, [quoted, binding, env_for_eval(env_or_opts)])
 
-  def eval_quoted(quoted, binding, %Macro.Env{} = env) do
-    {value, binding, _env} = :elixir.eval_quoted(quoted, binding, Map.to_list(env))
     {value, binding}
   end
 
-  def eval_quoted(quoted, binding, opts) when is_list(opts) do
-    validate_eval_opts(opts)
-    {value, binding, _env} = :elixir.eval_quoted(quoted, binding, opts)
-    {value, binding}
-  end
+  @doc """
+  Returns an environment for evaluation.
 
-  defp validate_eval_opts(opts) do
-    if f = opts[:functions], do: validate_imports(:functions, f)
-    if m = opts[:macros], do: validate_imports(:macros, m)
-    if a = opts[:aliases], do: validate_aliases(:aliases, a)
-    if r = opts[:requires], do: validate_requires(:requires, r)
-  end
+  It accepts either a `Macro.Env`, that is then pruned and prepared,
+  or a list of options. It returns an environment that is ready for
+  evaluation.
 
-  defp validate_requires(kind, requires) do
-    valid = is_list(requires) and Enum.all?(requires, &is_atom(&1))
+  Most functions in this module will automatically prepare the given
+  environment for evaluation, so you don't need to explicitly call
+  this function, with the exception of `eval_quoted_with_env/3`,
+  which was designed precisely to be called in a loop, to implement
+  features such as interactive shells or anything else with multiple
+  evaluations.
 
-    unless valid do
-      raise ArgumentError, "expected :#{kind} option given to eval in the format: [module]"
-    end
-  end
+  ## Options
 
-  defp validate_aliases(kind, aliases) do
-    valid = is_list(aliases) and Enum.all?(aliases, fn {k, v} -> is_atom(k) and is_atom(v) end)
+  If an env is not given, the options can be:
 
-    unless valid do
-      raise ArgumentError,
-            "expected :#{kind} option given to eval in the format: [{module, module}]"
-    end
-  end
+    * `:file` - the file to be considered in the evaluation
 
-  defp validate_imports(kind, imports) do
-    valid =
-      is_list(imports) and
-        Enum.all?(imports, fn {k, v} ->
-          is_atom(k) and is_list(v) and
-            Enum.all?(v, fn {name, arity} -> is_atom(name) and is_integer(arity) end)
-        end)
+    * `:line` - the line on which the script starts
+  """
+  @doc since: "1.14.0"
+  def env_for_eval(env_or_opts), do: :elixir.env_for_eval(env_or_opts)
 
-    unless valid do
-      raise ArgumentError,
-            "expected :#{kind} option given to eval in the format: [{module, [{name, arity}]}]"
-    end
+  @doc """
+  Evaluates the given `quoted` contents with `binding` and `env`.
+
+  This function is meant to be called in a loop, to implement features
+  such as interactive shells or anything else with multiple evaluations.
+  Therefore, the first time you call this function, you must compute
+  the initial environment with `env_for_eval/1`. The remaining calls
+  must pass the environment that was returned by this function.
+
+  ## Options
+
+    * `:prune_binding` - (since v1.14.2) prune binding to keep only
+      variables read or written by the evaluated code. Note that
+      variables used by modules are always pruned, even if later used
+      by the modules. You can submit to the `:on_module` tracer event
+      and access the variables used by the module from its environment.
+
+  """
+  @doc since: "1.14.0"
+  def eval_quoted_with_env(quoted, binding, %Macro.Env{} = env, opts \\ [])
+      when is_list(binding) do
+    eval_verify(:eval_quoted, [quoted, binding, env, opts])
   end
 
   @doc ~S"""
   Converts the given string to its quoted form.
 
   Returns `{:ok, quoted_form}` if it succeeds,
-  `{:error, {line, error, token}}` otherwise.
+  `{:error, {meta, message_info, token}}` otherwise.
 
   ## Options
 
@@ -955,7 +1077,7 @@ defmodule Code do
 
   """
   @spec string_to_quoted(List.Chars.t(), keyword) ::
-          {:ok, Macro.t()} | {:error, {location :: keyword, term, term}}
+          {:ok, Macro.t()} | {:error, {location :: keyword, binary | {binary, binary}, binary}}
   def string_to_quoted(string, opts \\ []) when is_list(opts) do
     file = Keyword.get(opts, :file, "nofile")
     line = Keyword.get(opts, :line, 1)
@@ -1033,8 +1155,7 @@ defmodule Code do
   @doc since: "1.13.0"
   @spec string_to_quoted_with_comments(List.Chars.t(), keyword) ::
           {:ok, Macro.t(), list(map())} | {:error, {location :: keyword, term, term}}
-  def string_to_quoted_with_comments(string, opts \\ [])
-      when is_binary(string) and is_list(opts) do
+  def string_to_quoted_with_comments(string, opts \\ []) when is_list(opts) do
     charlist = to_charlist(string)
     file = Keyword.get(opts, :file, "nofile")
     line = Keyword.get(opts, :line, 1)
@@ -1061,14 +1182,23 @@ defmodule Code do
 
   Check `string_to_quoted/2` for options information.
   """
+  @doc since: "1.13.0"
   @spec string_to_quoted_with_comments!(List.Chars.t(), keyword) :: {Macro.t(), list(map())}
   def string_to_quoted_with_comments!(string, opts \\ []) do
-    case string_to_quoted_with_comments(string, opts) do
+    charlist = to_charlist(string)
+
+    case string_to_quoted_with_comments(charlist, opts) do
       {:ok, forms, comments} ->
         {forms, comments}
 
       {:error, {location, error, token}} ->
-        :elixir_errors.parse_error(location, Keyword.get(opts, :file, "nofile"), error, token)
+        :elixir_errors.parse_error(
+          location,
+          Keyword.get(opts, :file, "nofile"),
+          error,
+          token,
+          {charlist, Keyword.get(opts, :line, 1), Keyword.get(opts, :column, 1)}
+        )
     end
   end
 
@@ -1086,10 +1216,10 @@ defmodule Code do
     Process.put(:code_formatter_comments, [comment | comments])
   end
 
-  defp next_eol_count('\s' ++ rest, count), do: next_eol_count(rest, count)
-  defp next_eol_count('\t' ++ rest, count), do: next_eol_count(rest, count)
-  defp next_eol_count('\n' ++ rest, count), do: next_eol_count(rest, count + 1)
-  defp next_eol_count('\r\n' ++ rest, count), do: next_eol_count(rest, count + 1)
+  defp next_eol_count([?\s | rest], count), do: next_eol_count(rest, count)
+  defp next_eol_count([?\t | rest], count), do: next_eol_count(rest, count)
+  defp next_eol_count([?\n | rest], count), do: next_eol_count(rest, count + 1)
+  defp next_eol_count([?\r, ?\n | rest], count), do: next_eol_count(rest, count + 1)
   defp next_eol_count(_, count), do: count
 
   defp previous_eol_count([{token, {_, _, count}} | _])
@@ -1152,6 +1282,9 @@ defmodule Code do
       The arity may be the atom `:*`, which implies all arities of
       that name. The formatter already includes a list of functions
       and this option augments this list.
+
+    * `:syntax_colors` - a keyword list of colors the output is colorized.
+      See `Inspect.Opts` for more information.
   """
   @doc since: "1.13.0"
   @spec quoted_to_algebra(Macro.t(), keyword) :: Inspect.Algebra.t()
@@ -1172,19 +1305,19 @@ defmodule Code do
   """
   @spec eval_file(binary, nil | binary) :: {term, binding}
   def eval_file(file, relative_to \\ nil) when is_binary(file) do
-    file = find_file(file, relative_to)
-    eval_string(File.read!(file), [], file: file, line: 1)
+    {charlist, file} = find_file!(file, relative_to)
+    eval_string(charlist, [], file: file, line: 1)
   end
 
   @deprecated "Use Code.require_file/2 or Code.compile_file/2 instead"
   @doc false
   def load_file(file, relative_to \\ nil) when is_binary(file) do
-    file = find_file(file, relative_to)
+    {charlist, file} = find_file!(file, relative_to)
     :elixir_code_server.call({:acquire, file})
 
     loaded =
       Module.ParallelChecker.verify(fn ->
-        :elixir_compiler.file(file, fn _, _ -> :ok end)
+        :elixir_compiler.string(charlist, file, fn _, _ -> :ok end)
       end)
 
     :elixir_code_server.cast({:required, file})
@@ -1203,7 +1336,7 @@ defmodule Code do
   ones will block until the file is available. This means that if `require_file/2`
   is called more than once with a given file, that file will be compiled only once.
   The first process to call `require_file/2` will get the list of loaded modules,
-  others will get `nil`.
+  others will get `nil`. The list of required files is managed per Erlang VM node.
 
   See `compile_file/2` if you would like to compile a file without tracking its
   filenames. Finally, if you would like to get the result of evaluating a file rather
@@ -1225,7 +1358,7 @@ defmodule Code do
   """
   @spec require_file(binary, nil | binary) :: [{module, binary}] | nil
   def require_file(file, relative_to \\ nil) when is_binary(file) do
-    file = find_file(file, relative_to)
+    {charlist, file} = find_file!(file, relative_to)
 
     case :elixir_code_server.call({:acquire, file}) do
       :required ->
@@ -1234,7 +1367,7 @@ defmodule Code do
       :proceed ->
         loaded =
           Module.ParallelChecker.verify(fn ->
-            :elixir_compiler.file(file, fn _, _ -> :ok end)
+            :elixir_compiler.string(charlist, file, fn _, _ -> :ok end)
           end)
 
         :elixir_code_server.cast({:required, file})
@@ -1264,8 +1397,10 @@ defmodule Code do
   @doc """
   Stores all given compilation options.
 
-  To store individual options, see `put_compiler_option/2`.
-  For a description of all options, see `put_compiler_option/2`.
+  Changing the compilation options affect all processes
+  running in a given Erlang VM node. To store individual
+  options and for a description of all options, see
+  `put_compiler_option/2`.
 
   ## Examples
 
@@ -1318,22 +1453,35 @@ defmodule Code do
   @doc """
   Stores a compilation option.
 
-  These options are global since they are stored by Elixir's code server.
+  Changing the compilation options affect all processes running in a
+  given Erlang VM node.
 
   Available options are:
 
-    * `:docs` - when `true`, retain documentation in the compiled module.
+    * `:docs` - when `true`, retains documentation in the compiled module.
       Defaults to `true`.
 
-    * `:debug_info` - when `true`, retain debug information in the compiled
-      module. This allows a developer to reconstruct the original source
-      code. Defaults to `true`.
+    * `:debug_info` - when `true`, retains debug information in the compiled
+      module. Defaults to `true`.
+      This enables static analysis tools as it allows developers to
+      partially reconstruct the original source code. Therefore, disabling
+      `:debug_info` is not recommended as it removes the ability of the
+      Elixir compiler and other tools to provide feedback. If you want to
+      remove the `:debug_info` while deploying, tools like `mix release`
+      already do such by default.
+      Additionally, `mix test` disables it via the `:test_elixirc_options`
+      project configuration option.
+      This option can also be overridden per module using the `@compile` directive.
 
-    * `:ignore_module_conflict` - when `true`, override modules that were
-      already defined without raising errors. Defaults to `false`.
+    * `:ignore_already_consolidated` (since v1.10.0) - when `true`, does not warn
+      when a protocol has already been consolidated and a new implementation is added.
+      Defaults to `false`.
 
-    * `:relative_paths` - when `true`, use relative paths in quoted nodes,
-      warnings and errors generated by the compiler. Note disabling this option
+    * `:ignore_module_conflict` - when `true`, does not warn when a module has
+      already been defined. Defaults to `false`.
+
+    * `:relative_paths` - when `true`, uses relative paths in quoted nodes,
+      warnings, and errors generated by the compiler. Note disabling this option
       won't affect runtime warnings and errors. Defaults to `true`.
 
     * `:warnings_as_errors` - causes compilation to fail when warnings are
@@ -1352,6 +1500,17 @@ defmodule Code do
       `string_to_quoted/2` (except by the options that change the AST itself).
       This can be used in combination with the tracer to retrieve localized
       information about events happening during compilation. Defaults to `[]`.
+      This option only affects code compilation functions, such as `compile_string/2`
+      and `compile_file/2` but not `string_to_quoted/2` and friends, as the
+      latter is used for other purposes beyond compilation.
+
+    * `:on_undefined_variable` (since v1.15.0) - either `:raise` or `:warn`.
+      When `:raise` (the default), undefined variables will trigger a compilation
+      error. You may be set it to `:warn` if you want undefined variables to
+      emit a warning and expand as to a local call to the zero-arity function
+      of the same name (for example, `node` would be expanded as `node()`).
+      This `:warn` behaviour only exists for compatibility reasons when working
+      with old dependencies.
 
   It always returns `:ok`. Raises an error for invalid options.
 
@@ -1401,6 +1560,12 @@ defmodule Code do
     :ok
   end
 
+  # TODO: Make this option have no effect on Elixir v2.0
+  def put_compiler_option(:on_undefined_variable, value) when value in [:raise, :warn] do
+    :elixir_config.put(:on_undefined_variable, value)
+    :ok
+  end
+
   def put_compiler_option(key, _value) do
     raise "unknown compiler option: #{inspect(key)}"
   end
@@ -1417,6 +1582,9 @@ defmodule Code do
   This function purges all modules currently kept by the compiler, allowing
   old compiler module names to be reused. If there are any processes running
   any code from such modules, they will be terminated too.
+
+  This function is only meant to be called if you have a long running node
+  that is constantly evaluating code.
 
   It returns `{:ok, number_of_modules_purged}`.
   """
@@ -1442,8 +1610,9 @@ defmodule Code do
   """
   @spec compile_string(List.Chars.t(), binary) :: [{module, binary}]
   def compile_string(string, file \\ "nofile") when is_binary(file) do
-    loaded = :elixir_compiler.string(to_charlist(string), file, fn _, _ -> :ok end)
-    Enum.map(loaded, &elem(&1, 0))
+    Module.ParallelChecker.verify(fn ->
+      :elixir_compiler.string(to_charlist(string), file, fn _, _ -> :ok end)
+    end)
   end
 
   @doc """
@@ -1456,8 +1625,9 @@ defmodule Code do
   """
   @spec compile_quoted(Macro.t(), binary) :: [{module, binary}]
   def compile_quoted(quoted, file \\ "nofile") when is_binary(file) do
-    loaded = :elixir_compiler.quoted(quoted, file, fn _, _ -> :ok end)
-    Enum.map(loaded, &elem(&1, 0))
+    Module.ParallelChecker.verify(fn ->
+      :elixir_compiler.quoted(quoted, file, fn _, _ -> :ok end)
+    end)
   end
 
   @doc """
@@ -1478,7 +1648,8 @@ defmodule Code do
   @spec compile_file(binary, nil | binary) :: [{module, binary}]
   def compile_file(file, relative_to \\ nil) when is_binary(file) do
     Module.ParallelChecker.verify(fn ->
-      :elixir_compiler.file(find_file(file, relative_to), fn _, _ -> :ok end)
+      {charlist, file} = find_file!(file, relative_to)
+      :elixir_compiler.string(charlist, file, fn _, _ -> :ok end)
     end)
   end
 
@@ -1539,6 +1710,53 @@ defmodule Code do
       {:error, reason} ->
         raise ArgumentError,
               "could not load module #{inspect(module)} due to reason #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Ensures the given modules are loaded.
+
+  Similar to `ensure_loaded/1`, but accepts a list of modules instead of a single
+  module, and loads all of them.
+
+  If all modules load successfully, returns `:ok`. Otherwise, returns `{:error, errors}`
+  where `errors` is a list of tuples made of the module and the reason it failed to load.
+
+  ## Examples
+
+      iex> Code.ensure_all_loaded([Atom, String])
+      :ok
+
+      iex> Code.ensure_all_loaded([Atom, DoesNotExist])
+      {:error, [{DoesNotExist, :nofile}]}
+
+  """
+  @doc since: "1.15.0"
+  @spec ensure_all_loaded([module]) :: :ok | {:error, [{module, reason}]}
+        when reason: :badfile | :nofile | :on_load_failure
+  def ensure_all_loaded(modules) when is_list(modules) do
+    :code.ensure_modules_loaded(modules)
+  end
+
+  @doc """
+  Same as `ensure_all_loaded/1` but raises if any of the modules cannot be loaded.
+  """
+  @doc since: "1.15.0"
+  @spec ensure_all_loaded!([module]) :: :ok
+  def ensure_all_loaded!(modules) do
+    case ensure_all_loaded(modules) do
+      :ok ->
+        :ok
+
+      {:error, errors} ->
+        formatted_errors =
+          errors
+          |> Enum.sort()
+          |> Enum.map_join("\n", fn {module, reason} ->
+            "  * #{inspect(module)} due to reason #{inspect(reason)}"
+          end)
+
+        raise ArgumentError, "could not load the following modules:\n\n" <> formatted_errors
     end
   end
 
@@ -1623,6 +1841,27 @@ defmodule Code do
   end
 
   @doc """
+  Returns `true` if the module is loaded.
+
+  This function doesn't attempt to load the module. For such behaviour,
+  `ensure_loaded?/1` can be used.
+
+  ## Examples
+
+      iex> Code.loaded?(Atom)
+      true
+
+      iex> Code.loaded?(NotYetLoaded)
+      false
+
+  """
+  @doc since: "1.15.0"
+  @spec loaded?(module) :: boolean
+  def loaded?(module) do
+    :erlang.module_loaded(module)
+  end
+
+  @doc """
   Returns true if the current process can await for module compilation.
 
   When compiling Elixir code via `Kernel.ParallelCompiler`, which is
@@ -1652,7 +1891,7 @@ defmodule Code do
   file.
 
   It returns the term stored in the documentation chunk in the format defined by
-  [EEP 48](https://erlang.org/eep/eeps/eep-0048.html) or `{:error, reason}` if
+  [EEP 48](https://www.erlang.org/eeps/eep-0048.html) or `{:error, reason}` if
   the chunk is not available.
 
   ## Examples
@@ -1684,8 +1923,8 @@ defmodule Code do
   def fetch_docs(module_or_path)
 
   def fetch_docs(module) when is_atom(module) do
-    case :code.get_object_code(module) do
-      {_module, bin, beam_path} ->
+    case get_beam_and_path(module) do
+      {bin, beam_path} ->
         case fetch_docs_from_beam(bin) do
           {:error, :chunk_not_found} ->
             app_root = Path.expand(Path.join(["..", ".."]), beam_path)
@@ -1697,9 +1936,9 @@ defmodule Code do
         end
 
       :error ->
-        case :code.which(module) do
-          :preloaded ->
-            # The erts directory is not necessarily included in releases
+        case :code.is_loaded(module) do
+          {:file, :preloaded} ->
+            # The ERTS directory is not necessarily included in releases
             # unless it is listed as an extra application.
             case :code.lib_dir(:erts) do
               path when is_list(path) ->
@@ -1720,7 +1959,16 @@ defmodule Code do
     fetch_docs_from_beam(String.to_charlist(path))
   end
 
-  @docs_chunk 'Docs'
+  defp get_beam_and_path(module) do
+    with {^module, beam, filename} <- :code.get_object_code(module),
+         {:ok, ^module} <- beam |> :beam_lib.info() |> Keyword.fetch(:module) do
+      {beam, filename}
+    else
+      _ -> :error
+    end
+  end
+
+  @docs_chunk [?D, ?o, ?c, ?s]
 
   defp fetch_docs_from_beam(bin_or_path) do
     case :beam_lib.chunks(bin_or_path, [@docs_chunk]) do
@@ -1752,17 +2000,8 @@ defmodule Code do
       {:error, {:invalid_chunk, bin}}
   end
 
-  @doc ~S"""
-  Deprecated function to retrieve old documentation format.
-
-  Elixir v1.7 adopts [EEP 48](https://erlang.org/eep/eeps/eep-0048.html)
-  which is a new documentation format meant to be shared across all
-  BEAM languages. The old format, used by `Code.get_docs/2`, is no
-  longer available, and therefore this function always returns `nil`.
-  Use `Code.fetch_docs/1` instead.
-  """
+  @doc false
   @deprecated "Code.get_docs/2 always returns nil as its outdated documentation is no longer stored on BEAM files. Use Code.fetch_docs/1 instead"
-  @spec get_docs(module, :moduledoc | :docs | :callback_docs | :type_docs | :all) :: nil
   def get_docs(_module, _kind) do
     nil
   end
@@ -1772,7 +2011,7 @@ defmodule Code do
   # Finds the file given the relative_to path.
   #
   # If the file is found, returns its path in binary, fails otherwise.
-  defp find_file(file, relative_to) do
+  defp find_file!(file, relative_to) do
     file =
       if relative_to do
         Path.expand(file, relative_to)
@@ -1780,10 +2019,9 @@ defmodule Code do
         Path.expand(file)
       end
 
-    if File.regular?(file) do
-      file
-    else
-      raise Code.LoadError, file: file
+    case File.read(file) do
+      {:ok, bin} -> {String.to_charlist(bin), file}
+      {:error, reason} -> raise Code.LoadError, file: file, reason: reason
     end
   end
 end

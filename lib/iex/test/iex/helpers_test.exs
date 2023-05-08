@@ -79,9 +79,11 @@ defmodule IEx.HelpersTest do
     end
 
     test "errors when setting up a breakpoint with invalid guard" do
-      assert_raise CompileError, ~r"cannot find or invoke local is_whatever/1", fn ->
-        break!(URI.decode_query(_, map) when is_whatever(map))
-      end
+      assert capture_io(:stderr, fn ->
+               assert_raise CompileError, fn ->
+                 break!(URI.decode_query(_, map) when is_whatever(map))
+               end
+             end) =~ "cannot find or invoke local is_whatever/1"
     end
 
     test "errors when setting up a break with no beam" do
@@ -286,7 +288,7 @@ defmodule IEx.HelpersTest do
     end
 
     test "errors when given {file, line} is not available" do
-      assert capture_iex("open({~s[foo], 3})") ==
+      assert capture_iex("open({~s[foo], 3})") =~
                "Could not open: \"foo\". File is not available."
     end
 
@@ -315,6 +317,12 @@ defmodule IEx.HelpersTest do
   describe "runtime_info" do
     test "shows VM information" do
       assert "\n## System and architecture" <> _ = capture_io(fn -> runtime_info() end)
+
+      assert "\n## Loaded OTP applications" <> _ =
+               capture_io(fn -> runtime_info([:applications]) end)
+
+      assert "\n## Memory allocators" <> _ =
+               capture_io(fn -> runtime_info([:allocators]) end)
     end
   end
 
@@ -380,6 +388,10 @@ defmodule IEx.HelpersTest do
       assert capture_io(fn -> h(IEx.Helpers.c() / 1) end) =~ c_h
       assert capture_io(fn -> h(pwd) end) =~ pwd_h
       assert capture_io(fn -> h(def) end) =~ def_h
+    end
+
+    test "prints sigil documentation" do
+      assert capture_io(fn -> h(~w//) end) =~ "Handles the sigil `~w` for list of words"
     end
 
     test "prints __info__ documentation" do
@@ -497,6 +509,7 @@ defmodule IEx.HelpersTest do
       impl = """
       defmodule Impl do
         @behaviour MyBehaviour
+        @doc delegate_to: {Foo, :bar, 3}
         def first(0), do: 0
         @doc "Docs for Impl.second/1"
         def second(0), do: 0
@@ -511,6 +524,14 @@ defmodule IEx.HelpersTest do
         assert c(files, ".") |> Enum.sort() == [Impl, MyBehaviour]
 
         assert capture_io(fn -> h(Impl.first() / 1) end) == """
+
+                                                def first(int)
+
+               delegate_to: Foo.bar/3
+
+               Impl.first/1 has no docs but is a callback for behaviour MyBehaviour. Showing
+               callback docs instead.
+
                @callback first(integer()) :: integer()
 
                Docs for MyBehaviour.first
@@ -533,12 +554,7 @@ defmodule IEx.HelpersTest do
 
                """
 
-        assert capture_io(fn -> h(Impl.first()) end) == """
-               @callback first(integer()) :: integer()
-
-               Docs for MyBehaviour.first
-
-               """
+        assert capture_io(fn -> h(Impl.first()) end) == capture_io(fn -> h(Impl.first() / 1) end)
 
         assert capture_io(fn -> h(Impl.second()) end) == """
 
@@ -831,7 +847,7 @@ defmodule IEx.HelpersTest do
 
                @macrocallback optional_macrocallback(:bar) :: atom()
 
-               @optional_callbacks [optional_callback: 1, optional_macrocallback: 1]
+               @optional_callbacks optional_callback: 1, optional_macrocallback: 1
 
                """
       end)
@@ -898,7 +914,7 @@ defmodule IEx.HelpersTest do
     end
 
     test "prints private types" do
-      assert capture_io(fn -> t(Date.Range) end) =~ "@typep iso_days"
+      assert capture_io(fn -> t(Date.Range) end) =~ "@typep days"
     end
 
     test "prints type information" do
@@ -1035,18 +1051,23 @@ defmodule IEx.HelpersTest do
       exports = capture_io(fn -> exports(IEx.Autocomplete) end)
       assert exports == "expand/1      expand/2      exports/1     remsh/1       \n"
     end
+
+    test "handles long function names" do
+      exports = capture_io(fn -> exports(Calendar.UTCOnlyTimeZoneDatabase) end)
+
+      assert exports ==
+               "time_zone_period_from_utc_iso_days/2 time_zone_periods_from_wall_datetime/2 \n"
+    end
   end
 
   describe "import_file" do
     test "imports a file" do
       with_file("dot-iex", "variable = :hello\nimport IO", fn ->
-        capture_io(:stderr, fn ->
-          assert "** (CompileError) iex:1: undefined function variable/0" <> _ =
-                   capture_iex("variable")
-        end)
+        assert capture_io(:stderr, fn -> capture_iex("variable") end) =~
+                 "undefined variable \"variable\""
 
-        assert "** (CompileError) iex:1: undefined function puts/1" <> _ =
-                 capture_iex("puts \"hi\"")
+        assert capture_io(:stderr, fn -> capture_iex("puts \"hi\"") end) =~
+                 "undefined function puts/1"
 
         assert capture_iex("import_file \"dot-iex\"\nvariable\nputs \"hi\"") ==
                  "IO\n:hello\nhi\n:ok"
@@ -1058,13 +1079,11 @@ defmodule IEx.HelpersTest do
       dot_1 = "variable = :hello\nimport IO"
 
       with_file(["dot-iex", "dot-iex-1"], [dot, dot_1], fn ->
-        capture_io(:stderr, fn ->
-          assert "** (CompileError) iex:1: undefined function parent/0" <> _ =
-                   capture_iex("parent")
-        end)
+        assert capture_io(:stderr, fn -> capture_iex("parent") end) =~
+                 "undefined variable \"parent\""
 
-        assert "** (CompileError) iex:1: undefined function puts/1" <> _ =
-                 capture_iex("puts \"hi\"")
+        assert capture_io(:stderr, fn -> capture_iex("puts \"hi\"") end) =~
+                 "undefined function puts/1"
 
         assert capture_iex("import_file \"dot-iex\"\nvariable\nputs \"hi\"\nparent") ==
                  "IO\n:hello\nhi\n:ok\ntrue"
@@ -1106,15 +1125,14 @@ defmodule IEx.HelpersTest do
   describe "use_if_available" do
     test "uses a module only if available" do
       assert "nil" == capture_iex("use_if_available NoSuchModule")
-      assert "1" == capture_iex("use_if_available Bitwise; 1 &&& 1")
-      assert "1" == capture_iex("use_if_available Bitwise, only_operators: true; 1 &&& 1")
     end
   end
 
   describe "iex> |> (and other binary operators)" do
     test "passes previous result to the pipe" do
-      Enum.each([:~>>, :<<~, :~>, :<~, :<~>, :<|>], fn op ->
-        assert capture_iex("42\n  #{op} IO.puts()") =~ "undefined function #{op}/2"
+      Enum.each([:~>>, :<<~, :~>, :<~, :<~>], fn op ->
+        assert capture_io(:stderr, fn -> capture_iex("42\n  #{op} IO.puts()") end) =~
+                 "undefined function #{op}/2"
       end)
 
       assert capture_iex("+42") =~ "42"
@@ -1122,6 +1140,17 @@ defmodule IEx.HelpersTest do
       assert capture_iex("42\n |> IO.inspect(label: \"foo\")") =~ "foo: 42"
       assert capture_iex("[42]\n++ [24]\n|> IO.inspect(label: \"foo\")") =~ "foo: [42, 24]"
       assert capture_iex("|> IO.puts()") =~ "(RuntimeError) v(-1) is out of bounds"
+    end
+
+    test "raises if previous expression was a match" do
+      assert capture_iex("x = 42\n|> IO.puts()") =~
+               "surround the whole pipeline with parentheses '|>'"
+
+      assert capture_iex("%{x: x} = %{x: 42}\n|> IO.puts()") =~
+               "surround the whole pipeline with parentheses '|>'"
+
+      assert capture_iex("%{x: x} = map = %{x: 42}\n|> IO.puts()") =~
+               "surround the whole pipeline with parentheses '|>'"
     end
   end
 
@@ -1143,7 +1172,7 @@ defmodule IEx.HelpersTest do
     end
 
     test "handles errors" do
-      ExUnit.CaptureIO.capture_io(fn ->
+      ExUnit.CaptureIO.capture_io(:stderr, fn ->
         with_file("sample.ex", "raise \"oops\"", fn ->
           assert_raise CompileError, fn -> c("sample.ex") end
         end)
@@ -1293,7 +1322,8 @@ defmodule IEx.HelpersTest do
                  assert Sample.run() == :run
 
                  File.write!(filename, "defmodule Sample do end")
-                 assert {:reloaded, Sample, [Sample]} = r(Sample)
+                 assert {:reloaded, [Sample]} = r(Sample)
+                 assert {:reloaded, [Sample]} = r([Sample])
 
                  message = "function Sample.run/0 is undefined or private"
 
@@ -1320,7 +1350,8 @@ defmodule IEx.HelpersTest do
         assert :sample.hello() == :world
 
         File.write!(filename, other_erlang_module_code())
-        assert {:reloaded, :sample, [:sample]} = r(:sample)
+        assert {:reloaded, [:sample]} = r(:sample)
+        assert {:reloaded, [:sample]} = r([:sample])
         assert :sample.hello() == :bye
       end)
     after
@@ -1335,6 +1366,14 @@ defmodule IEx.HelpersTest do
 
       assert_raise ArgumentError, fn ->
         pid("0.6.-6")
+      end
+    end
+
+    test "builds a PID from atom" do
+      assert inspect(pid(:init)) == "#PID<0.0.0>"
+
+      assert_raise ArgumentError, fn ->
+        pid(:random_atom_ZM6pX6VwQx)
       end
     end
 
@@ -1419,7 +1458,7 @@ defmodule IEx.HelpersTest do
       defstruct []
 
       defimpl IEx.Info do
-        def info(_), do: [{"A", "it's A"}, {:b, "it's :b"}, {'c', "it's 'c'"}]
+        def info(_), do: [{"A", "it's A"}, {:b, "it's :b"}, {~c"c", "it's 'c'"}]
       end
     end
 

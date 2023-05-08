@@ -22,13 +22,18 @@ defmodule TaskTest do
 
     receive do
       {:DOWN, ^ref, _, _, _} ->
-        %Task{ref: ref, pid: pid, owner: self()}
+        %Task{ref: ref, pid: pid, owner: self(), mfa: {__MODULE__, :create_dummy_task, 1}}
     end
   end
 
   def sleep(number) do
     Process.sleep(number)
     number
+  end
+
+  def wait_until_down(task) do
+    ref = Process.monitor(task.pid)
+    assert_receive {:DOWN, ^ref, _, _, _}
   end
 
   test "can be supervised directly" do
@@ -67,6 +72,7 @@ defmodule TaskTest do
     assert task.__struct__ == Task
     assert is_pid(task.pid)
     assert is_reference(task.ref)
+    assert task.mfa == {:erlang, :apply, 2}
 
     # Assert the link
     {:links, links} = Process.info(self(), :links)
@@ -90,6 +96,7 @@ defmodule TaskTest do
   test "async/3" do
     task = Task.async(__MODULE__, :wait_and_send, [self(), :done])
     assert task.__struct__ == Task
+    assert task.mfa == {__MODULE__, :wait_and_send, 2}
 
     {:links, links} = Process.info(self(), :links)
     assert task.pid in links
@@ -204,9 +211,69 @@ defmodule TaskTest do
     assert_receive :done
   end
 
+  describe "ignore/1" do
+    test "discards on time replies" do
+      task = Task.async(fn -> :ok end)
+      wait_until_down(task)
+      assert Task.ignore(task) == {:ok, :ok}
+      assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
+    end
+
+    test "discards late replies" do
+      task = Task.async(fn -> assert_receive(:go) && :ok end)
+      assert Task.ignore(task) == nil
+      send(task.pid, :go)
+      wait_until_down(task)
+      assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
+    end
+
+    test "discards on-time failures" do
+      Process.flag(:trap_exit, true)
+      task = Task.async(fn -> exit(:oops) end)
+      wait_until_down(task)
+      assert Task.ignore(task) == {:exit, :oops}
+      assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
+    end
+
+    test "discards late failures" do
+      task = Task.async(fn -> assert_receive(:go) && exit(:oops) end)
+      assert Task.ignore(task) == nil
+      send(task.pid, :go)
+      wait_until_down(task)
+      assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
+    end
+
+    test "exits on :noconnection" do
+      ref = make_ref()
+      task = %Task{ref: ref, pid: self(), owner: self(), mfa: {__MODULE__, :test, 1}}
+      send(self(), {:DOWN, ref, self(), self(), :noconnection})
+      assert catch_exit(Task.ignore(task)) |> elem(0) == {:nodedown, :nonode@nohost}
+    end
+
+    test "can ignore completed tasks" do
+      assert Task.ignore(Task.completed(:done)) == {:ok, :done}
+    end
+  end
+
   describe "await/2" do
+    test "demonitors and unalias on timeout" do
+      task =
+        Task.async(fn ->
+          assert_receive :go
+          :done
+        end)
+
+      assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
+      send(task.pid, :go)
+      ref = task.ref
+
+      wait_until_down(task)
+      refute_received {^ref, :done}
+      refute_received {:DOWN, ^ref, _, _, _}
+    end
+
     test "exits on timeout" do
-      task = %Task{ref: make_ref(), owner: self(), pid: nil}
+      task = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
       assert catch_exit(Task.await(task, 0)) == {:timeout, {Task, :await, [task, 0]}}
     end
 
@@ -258,14 +325,14 @@ defmodule TaskTest do
 
     test "exits on :noconnection" do
       ref = make_ref()
-      task = %Task{ref: ref, pid: self(), owner: self()}
+      task = %Task{ref: ref, pid: self(), owner: self(), mfa: {__MODULE__, :test, 1}}
       send(self(), {:DOWN, ref, :process, self(), :noconnection})
       assert catch_exit(Task.await(task)) |> elem(0) == {:nodedown, :nonode@nohost}
     end
 
     test "exits on :noconnection from named monitor" do
       ref = make_ref()
-      task = %Task{ref: ref, owner: self(), pid: nil}
+      task = %Task{ref: ref, owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
       send(self(), {:DOWN, ref, :process, {:name, :node}, :noconnection})
       assert catch_exit(Task.await(task)) |> elem(0) == {:nodedown, :node}
     end
@@ -289,7 +356,12 @@ defmodule TaskTest do
 
     test "returns replies in input order ignoring response order" do
       refs = [ref_1 = make_ref(), ref_2 = make_ref(), ref_3 = make_ref()]
-      tasks = Enum.map(refs, fn ref -> %Task{ref: ref, owner: self(), pid: nil} end)
+
+      tasks =
+        Enum.map(refs, fn ref ->
+          %Task{ref: ref, owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
+        end)
+
       send(self(), {ref_2, 3})
       send(self(), {ref_3, 9})
       send(self(), {ref_1, 1})
@@ -314,7 +386,12 @@ defmodule TaskTest do
 
     test "ignores additional messages after reply" do
       refs = [ref_1 = make_ref(), ref_2 = make_ref()]
-      tasks = Enum.map(refs, fn ref -> %Task{ref: ref, owner: self(), pid: nil} end)
+
+      tasks =
+        Enum.map(refs, fn ref ->
+          %Task{ref: ref, owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
+        end)
+
       send(self(), {ref_2, :b})
       send(self(), {ref_2, :other})
       send(self(), {ref_1, :a})
@@ -383,7 +460,7 @@ defmodule TaskTest do
     test "exits immediately on :noconnection" do
       tasks = [
         Task.async(fn -> Process.sleep(:infinity) end),
-        %Task{ref: ref = make_ref(), owner: self(), pid: self()}
+        %Task{ref: ref = make_ref(), owner: self(), pid: self(), mfa: {__MODULE__, :test, 1}}
       ]
 
       send(self(), {:DOWN, ref, :process, self(), :noconnection})
@@ -393,7 +470,7 @@ defmodule TaskTest do
     test "exits immediately on :noconnection from named monitor" do
       tasks = [
         Task.async(fn -> Process.sleep(:infinity) end),
-        %Task{ref: ref = make_ref(), owner: self(), pid: nil}
+        %Task{ref: ref = make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
       ]
 
       send(self(), {:DOWN, ref, :process, {:name, :node}, :noconnection})
@@ -416,7 +493,7 @@ defmodule TaskTest do
 
   describe "yield/2" do
     test "returns {:ok, result} when reply and :DOWN in message queue" do
-      task = %Task{ref: make_ref(), owner: self(), pid: nil}
+      task = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
       send(self(), {task.ref, :result})
       send(self(), {:DOWN, task.ref, :process, self(), :abnormal})
       assert Task.yield(task, 0) == {:ok, :result}
@@ -424,7 +501,7 @@ defmodule TaskTest do
     end
 
     test "returns nil on timeout" do
-      task = %Task{ref: make_ref(), pid: nil, owner: self()}
+      task = %Task{ref: make_ref(), pid: nil, owner: self(), mfa: {__MODULE__, :test, 1}}
       assert Task.yield(task, 0) == nil
     end
 
@@ -435,7 +512,7 @@ defmodule TaskTest do
 
     test "exits on :noconnection" do
       ref = make_ref()
-      task = %Task{ref: ref, pid: self(), owner: self()}
+      task = %Task{ref: ref, pid: self(), owner: self(), mfa: {__MODULE__, :test, 1}}
       send(self(), {:DOWN, ref, self(), self(), :noconnection})
       assert catch_exit(Task.yield(task)) |> elem(0) == {:nodedown, :nonode@nohost}
     end
@@ -453,16 +530,41 @@ defmodule TaskTest do
 
   describe "yield_many/2" do
     test "returns {:ok, result} when reply and :DOWN in message queue" do
-      task = %Task{ref: make_ref(), owner: self(), pid: nil}
+      task = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
       send(self(), {task.ref, :result})
       send(self(), {:DOWN, task.ref, :process, self(), :abnormal})
       assert Task.yield_many([task], 0) == [{task, {:ok, :result}}]
       refute_received {:DOWN, _, _, _, _}
     end
 
-    test "returns nil on timeout" do
-      task = %Task{ref: make_ref(), owner: self(), pid: nil}
+    test "returns nil on timeout by default" do
+      task = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
       assert Task.yield_many([task], 0) == [{task, nil}]
+    end
+
+    test "shuts down on timeout when configured" do
+      Process.flag(:trap_exit, true)
+      task = Task.async(fn -> Process.sleep(:infinity) end)
+      assert Task.yield_many([task], timeout: 0, on_timeout: :kill_task) == [{task, nil}]
+      refute Process.alive?(task.pid)
+    end
+
+    test "ignores on timeout when configured" do
+      task =
+        Task.async(fn ->
+          receive do
+            :done -> :ok
+          end
+        end)
+
+      assert Task.yield_many([task], timeout: 0, on_timeout: :ignore) == [{task, nil}]
+      assert Process.alive?(task.pid)
+
+      ref = Process.monitor(task.pid)
+      send(task.pid, :done)
+      assert_receive {:DOWN, ^ref, _, _, _}
+
+      assert Task.yield(task, 0) == nil
     end
 
     test "return exit on normal exit" do
@@ -472,7 +574,7 @@ defmodule TaskTest do
 
     test "exits on :noconnection" do
       ref = make_ref()
-      task = %Task{ref: ref, pid: self(), owner: self()}
+      task = %Task{ref: ref, pid: self(), owner: self(), mfa: {__MODULE__, :test, 1}}
       send(self(), {:DOWN, ref, :process, self(), :noconnection})
       assert catch_exit(Task.yield_many([task])) |> elem(0) == {:nodedown, :nonode@nohost}
     end
@@ -488,9 +590,9 @@ defmodule TaskTest do
     end
 
     test "returns results from multiple tasks" do
-      task1 = %Task{ref: make_ref(), owner: self(), pid: nil}
-      task2 = %Task{ref: make_ref(), owner: self(), pid: nil}
-      task3 = %Task{ref: make_ref(), owner: self(), pid: nil}
+      task1 = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
+      task2 = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
+      task3 = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
 
       send(self(), {task1.ref, :result})
       send(self(), {:DOWN, task3.ref, :process, self(), :normal})
@@ -500,9 +602,9 @@ defmodule TaskTest do
     end
 
     test "returns results on infinity timeout" do
-      task1 = %Task{ref: make_ref(), owner: self(), pid: nil}
-      task2 = %Task{ref: make_ref(), owner: self(), pid: nil}
-      task3 = %Task{ref: make_ref(), owner: self(), pid: nil}
+      task1 = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
+      task2 = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
+      task3 = %Task{ref: make_ref(), owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}
 
       send(self(), {task1.ref, :result})
       send(self(), {task2.ref, :result})
@@ -575,10 +677,18 @@ defmodule TaskTest do
                {{:nodedown, node()}, {Task, :shutdown, [task, 5000]}}
     end
 
-    test "raises if task PID is nil" do
-      task = %Task{ref: make_ref(), owner: nil, pid: nil}
-      message = "task #{inspect(task)} does not have an associated task process"
-      assert_raise ArgumentError, message, fn -> Task.shutdown(task) end
+    test "ignores if task PID is nil" do
+      ref = make_ref()
+      send(self(), {ref, :done})
+
+      assert Task.shutdown(%Task{ref: ref, owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}) ==
+               {:ok, :done}
+
+      ref = make_ref()
+      send(self(), {:DOWN, ref, :process, self(), :done})
+
+      assert Task.shutdown(%Task{ref: ref, owner: self(), pid: nil, mfa: {__MODULE__, :test, 1}}) ==
+               {:exit, :done}
     end
 
     test "raises when invoked from a non-owner process" do
@@ -764,6 +874,15 @@ defmodule TaskTest do
 
       assert_receive :done
     end
+
+    test "consuming from another process" do
+      parent = self()
+      stream = Task.async_stream([1, 2, 3], &send(parent, &1))
+      Task.start(Stream, :run, [stream])
+      assert_receive 1
+      assert_receive 2
+      assert_receive 3
+    end
   end
 
   for {desc, concurrency} <- [==: 4, <: 2, >: 8] do
@@ -917,6 +1036,23 @@ defmodule TaskTest do
                |> Enum.to_list() == [exit: :timeout, ok: 1, exit: :timeout, ok: 1]
 
         refute_received _
+      end
+
+      test "with timeout and :zip_input_on_exit set to true" do
+        opts = Keyword.merge(@opts, zip_input_on_exit: true, on_timeout: :kill_task, timeout: 50)
+
+        assert [1, 100]
+               |> Task.async_stream(&sleep/1, opts)
+               |> Enum.to_list() == [ok: 1, exit: {100, :timeout}]
+      end
+
+      test "with outer halt on failure and :zip_input_on_exit" do
+        Process.flag(:trap_exit, true)
+        opts = Keyword.merge(@opts, zip_input_on_exit: true)
+
+        assert 1..8
+               |> Task.async_stream(&exit/1, opts)
+               |> Enum.take(4) == [exit: {1, 1}, exit: {2, 2}, exit: {3, 3}, exit: {4, 4}]
       end
     end
   end

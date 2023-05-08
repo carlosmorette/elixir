@@ -64,14 +64,14 @@ defmodule Mix.Tasks.Compile.AppTest do
   end
 
   test "generates .app file when changes happen" do
-    Mix.Project.push(MixTest.Case.Sample)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(MixTest.Case.Sample)
+
       Mix.Tasks.Compile.Elixir.run([])
       assert Mix.Tasks.Compile.App.run([]) == {:ok, []}
 
       properties = parse_resource_file(:sample)
-      assert properties[:vsn] == '0.1.0'
+      assert properties[:vsn] == ~c"0.1.0"
       assert properties[:modules] == [A, B]
       assert properties[:applications] == [:kernel, :stdlib, :elixir]
       refute Keyword.has_key?(properties, :compile_env)
@@ -81,9 +81,9 @@ defmodule Mix.Tasks.Compile.AppTest do
   end
 
   test "generates .app file with compile_env" do
-    Mix.Project.push(MixTest.Case.Sample)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(MixTest.Case.Sample)
+
       Mix.ProjectStack.compile_env([{:app, :key, :error}])
       assert Mix.Tasks.Compile.App.run([]) == {:ok, []}
       assert parse_resource_file(:sample)[:compile_env] == [{:app, :key, :error}]
@@ -107,39 +107,45 @@ defmodule Mix.Tasks.Compile.AppTest do
   end
 
   test "uses custom application settings" do
-    Mix.Project.push(CustomProject)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(CustomProject)
+
       Mix.Tasks.Compile.Elixir.run([])
       Mix.Tasks.Compile.App.run([])
 
       properties = parse_resource_file(:custom_project)
-      assert properties[:vsn] == '0.2.0'
+      assert properties[:vsn] == ~c"0.2.0"
       assert properties[:maxT] == :infinity
-      assert properties[:applications] == [:kernel, :stdlib, :elixir, :logger, :example_app]
-      assert properties[:description] == 'Some UTF-8 dëscriptión'
+      assert properties[:optional_applications] == [:ex_unit, :mix]
+      assert properties[:description] == ~c"Some UTF-8 dëscriptión"
+
+      assert properties[:applications] ==
+               [:kernel, :stdlib, :elixir, :logger, :ex_unit, :example_app, :mix]
+
       refute Keyword.has_key?(properties, :extra_applications)
     end)
   end
 
   test "infers applications" do
-    Mix.Project.push(CustomDeps)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(CustomDeps)
+
       Mix.Tasks.Compile.Elixir.run([])
       Mix.Tasks.Compile.App.run([])
 
       properties = parse_resource_file(:custom_deps)
 
       assert properties[:applications] ==
-               [:kernel, :stdlib, :elixir, :logger, :ok1, :ok3, :ok4, :ok7, :ok11]
+               [:kernel, :stdlib, :elixir, :logger, :ok1, :ok3, :ok4, :ok6, :ok7, :ok11]
+
+      assert properties[:optional_applications] == [:ok6]
     end)
   end
 
   test "validates properties" do
-    Mix.Project.push(InvalidProject)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(InvalidProject)
+
       Process.put(:application, [:not_a_keyword, applications: []])
       message = "Application configuration returned from application/0 should be a keyword list"
 
@@ -234,15 +240,15 @@ defmodule Mix.Tasks.Compile.AppTest do
   end
 
   test ".app contains description and registered (as required by systools)" do
-    Mix.Project.push(MixTest.Case.Sample)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(MixTest.Case.Sample)
+
       Mix.Tasks.Compile.Elixir.run([])
       assert Mix.Tasks.Compile.App.run([]) == {:ok, []}
 
       properties = parse_resource_file(:sample)
       assert properties[:registered] == []
-      assert properties[:description] == 'sample'
+      assert properties[:description] == ~c"sample"
       assert properties[:applications] == [:kernel, :stdlib, :elixir]
 
       assert Mix.Tasks.Compile.App.run([]) == {:noop, []}
@@ -250,9 +256,9 @@ defmodule Mix.Tasks.Compile.AppTest do
   end
 
   test "raises on invalid version" do
-    Mix.Project.push(InvalidVsnProject)
-
     in_fixture("no_mixfile", fn ->
+      Mix.Project.push(InvalidVsnProject)
+
       message = ~r"Expected :version to be a valid Version, got: \"0.3\""
 
       assert_raise Mix.Error, message, fn ->

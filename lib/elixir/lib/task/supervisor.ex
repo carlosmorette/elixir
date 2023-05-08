@@ -16,7 +16,55 @@ defmodule Task.Supervisor do
 
   The options given in the child specification are documented in `start_link/1`.
 
+  Once started, you can start tasks directly under the supervisor, for example:
+
+      task = Task.Supervisor.async(MyApp.TaskSupervisor, fn ->
+        :do_some_work
+      end)
+
   See the `Task` module for more examples.
+
+  ## Scalability and partitioning
+
+  The `Task.Supervisor` is a single process responsible for starting
+  other processes. In some applications, the `Task.Supervisor` may
+  become a bottleneck. To address this, you can start multiple instances
+  of the `Task.Supervisor` and then pick a random instance to start
+  the task on.
+
+  Instead of:
+
+      children = [
+        {Task.Supervisor, name: MyApp.TaskSupervisor}
+      ]
+
+  and:
+
+      Task.Supervisor.async(MyApp.TaskSupervisor, fn -> :do_some_work end)
+
+  You can do this:
+
+      children = [
+        {PartitionSupervisor,
+         child_spec: Task.Supervisor,
+         name: MyApp.TaskSupervisors}
+      ]
+
+  and then:
+
+      Task.Supervisor.async(
+        {:via, PartitionSupervisor, {MyApp.TaskSupervisors, self()}},
+        fn -> :do_some_work end
+      )
+
+  In the code above, we start a partition supervisor that will by default
+  start a dynamic supervisor for each core in your machine. Then, instead
+  of calling the `Task.Supervisor` by name, you call it through the
+  partition supervisor using the `{:via, PartitionSupervisor, {name, key}}`
+  format, where `name` is the name of the partition supervisor and `key`
+  is the routing key. We picked `self()` as the routing key, which means
+  each process will be assigned one of the existing task supervisors.
+  Read the `PartitionSupervisor` docs for more information.
 
   ## Name registration
 
@@ -74,7 +122,7 @@ defmodule Task.Supervisor do
 
   This function could also receive `:restart` and `:shutdown` as options
   but those two options have been deprecated and it is now preferred to
-  give them directly to `start_child` and `async`.
+  give them directly to `start_child`.
   """
   @spec start_link([option]) :: Supervisor.on_start()
   def start_link(options \\ []) do
@@ -105,7 +153,7 @@ defmodule Task.Supervisor do
 
   The `supervisor` must be a reference as defined in `Supervisor`.
   The task will still be linked to the caller, see `Task.async/3` for
-  more information and `async_nolink/2` for a non-linked variant.
+  more information and `async_nolink/3` for a non-linked variant.
 
   Raises an error if `supervisor` has reached the maximum number of
   children.
@@ -116,7 +164,7 @@ defmodule Task.Supervisor do
       or an integer indicating the timeout value, defaults to 5000 milliseconds.
 
   """
-  @spec async(Supervisor.supervisor(), (() -> any), Keyword.t()) :: Task.t()
+  @spec async(Supervisor.supervisor(), (-> any), Keyword.t()) :: Task.t()
   def async(supervisor, fun, options \\ []) do
     async(supervisor, :erlang, :apply, [fun, []], options)
   end
@@ -126,7 +174,7 @@ defmodule Task.Supervisor do
 
   The `supervisor` must be a reference as defined in `Supervisor`.
   The task will still be linked to the caller, see `Task.async/3` for
-  more information and `async_nolink/2` for a non-linked variant.
+  more information and `async_nolink/3` for a non-linked variant.
 
   Raises an error if `supervisor` has reached the maximum number of
   children.
@@ -151,6 +199,10 @@ defmodule Task.Supervisor do
 
   Raises an error if `supervisor` has reached the maximum number of
   children.
+
+  Note this function requires the task supervisor to have `:temporary`
+  as the `:restart` option (the default), as `async_nolink/3` keeps a
+  direct reference to the task which is lost if the task is restarted.
 
   ## Options
 
@@ -219,7 +271,7 @@ defmodule Task.Supervisor do
       end
 
   """
-  @spec async_nolink(Supervisor.supervisor(), (() -> any), Keyword.t()) :: Task.t()
+  @spec async_nolink(Supervisor.supervisor(), (-> any), Keyword.t()) :: Task.t()
   def async_nolink(supervisor, fun, options \\ []) do
     async_nolink(supervisor, :erlang, :apply, [fun, []], options)
   end
@@ -235,7 +287,7 @@ defmodule Task.Supervisor do
   children.
 
   Note this function requires the task supervisor to have `:temporary`
-  as the `:restart` option (the default), as `async_nolink/4` keeps a
+  as the `:restart` option (the default), as `async_nolink/5` keeps a
   direct reference to the task which is lost if the task is restarted.
   """
   @spec async_nolink(Supervisor.supervisor(), module, atom, [term], Keyword.t()) :: Task.t()
@@ -249,7 +301,7 @@ defmodule Task.Supervisor do
 
   Each element will be prepended to the given `args` and processed by its
   own task. The tasks will be spawned under the given `supervisor` and
-  linked to the current process, similarly to `async/4`.
+  linked to the caller process, similarly to `async/5`.
 
   When streamed, each task will emit `{:ok, value}` upon successful
   completion or `{:exit, reason}` if the caller is trapping exits.
@@ -308,7 +360,7 @@ defmodule Task.Supervisor do
 
   Each element in `enumerable` is passed as argument to the given function `fun`
   and processed by its own task. The tasks will be spawned under the given
-  `supervisor` and linked to the current process, similarly to `async/2`.
+  `supervisor` and linked to the caller process, similarly to `async/3`.
 
   See `async_stream/6` for discussion, options, and examples.
   """
@@ -325,7 +377,7 @@ defmodule Task.Supervisor do
 
   Each element in `enumerable` will be prepended to the given `args` and processed
   by its own task. The tasks will be spawned under the given `supervisor` and
-  will not be linked to the current process, similarly to `async_nolink/4`.
+  will not be linked to the caller process, similarly to `async_nolink/5`.
 
   See `async_stream/6` for discussion, options, and examples.
   """
@@ -349,7 +401,8 @@ defmodule Task.Supervisor do
 
   Each element in `enumerable` is passed as argument to the given function `fun`
   and processed by its own task. The tasks will be spawned under the given
-  `supervisor` and will not be linked to the current process, similarly to `async_nolink/2`.
+  `supervisor` and will not be linked to the caller process, similarly
+  to `async_nolink/3`.
 
   See `async_stream/6` for discussion and examples.
   """
@@ -369,7 +422,11 @@ defmodule Task.Supervisor do
   end
 
   @doc """
-  Returns all children PIDs.
+  Returns all children PIDs except those that are restarting.
+
+  Note that calling this function when supervising a large number
+  of children under low memory conditions can cause an out of memory
+  exception.
   """
   @spec children(Supervisor.supervisor()) :: [pid]
   def children(supervisor) do
@@ -386,7 +443,7 @@ defmodule Task.Supervisor do
   Note that the spawned process is not linked to the caller, but
   only to the supervisor. This command is useful in case the
   task needs to perform side-effects (like I/O) and you have no
-  interest on its results nor if it completes successfully.
+  interest in its results nor if it completes successfully.
 
   ## Options
 
@@ -394,13 +451,13 @@ defmodule Task.Supervisor do
       `:transient` or `:permanent`. `:temporary` means the task is never
       restarted, `:transient` means it is restarted if the exit is not
       `:normal`, `:shutdown` or `{:shutdown, reason}`. A `:permanent` restart
-      strategy means it is always restarted. It defaults to `:temporary`.
+      strategy means it is always restarted.
 
-    * `:shutdown` - `:brutal_kill` if the tasks must be killed directly on shutdown
+    * `:shutdown` - `:brutal_kill` if the task must be killed directly on shutdown
       or an integer indicating the timeout value, defaults to 5000 milliseconds.
 
   """
-  @spec start_child(Supervisor.supervisor(), (() -> any), keyword) ::
+  @spec start_child(Supervisor.supervisor(), (-> any), keyword) ::
           DynamicSupervisor.on_start_child()
   def start_child(supervisor, fun, options \\ []) do
     restart = options[:restart]
@@ -412,7 +469,7 @@ defmodule Task.Supervisor do
   @doc """
   Starts a task as a child of the given `supervisor`.
 
-  Similar to `start_child/2` except the task is specified
+  Similar to `start_child/3` except the task is specified
   by the given `module`, `fun` and `args`.
   """
   @spec start_child(Supervisor.supervisor(), module, atom, [term], keyword) ::
@@ -421,16 +478,37 @@ defmodule Task.Supervisor do
       when is_atom(fun) and is_list(args) do
     restart = options[:restart]
     shutdown = options[:shutdown]
-    args = [get_owner(self()), get_callers(self()), {module, fun, args}]
-    start_child_with_spec(supervisor, args, restart, shutdown)
+    mfa = {module, fun, args}
+    owner = get_owner(self())
+    callers = get_callers(self())
+
+    if restart == :temporary or restart == nil do
+      start_child_maybe_temporary(supervisor, owner, callers, restart, shutdown, mfa)
+    else
+      start_child_with_spec(supervisor, [owner, callers, mfa], restart, shutdown)
+    end
+  end
+
+  defp start_child_maybe_temporary(supervisor, owner, callers, restart, shutdown, mfa) do
+    case start_child_with_spec(supervisor, [owner, :monitor], restart, shutdown) do
+      # TODO: This only exists because we need to support reading restart/shutdown
+      # from two different places. Remove this, the init function and the associated
+      # clause in DynamicSupervisor on Elixir v2.0
+      {:restart, restart} ->
+        start_child_with_spec(supervisor, [owner, callers, mfa], restart, shutdown)
+
+      {:ok, pid} ->
+        # We mimic async but there is nothing to reply to
+        alias = make_ref()
+        send(pid, {self(), alias, alias, callers, mfa})
+        {:ok, pid}
+
+      {:error, _} = error ->
+        error
+    end
   end
 
   defp start_child_with_spec(supervisor, args, restart, shutdown) do
-    # TODO: This only exists because we need to support reading restart/shutdown
-    # from two different places. Remove this, the init function and the associated
-    # clause in DynamicSupervisor on Elixir v2.0
-    # TODO: Once we do this, we can also make it so the task arguments are never
-    # sent to the supervisor if the restart is temporary
     GenServer.call(supervisor, {:start_task, args, restart, shutdown}, :infinity)
   end
 
@@ -453,15 +531,14 @@ defmodule Task.Supervisor do
 
   defp async(supervisor, link_type, module, fun, args, options) do
     owner = self()
-    args = [get_owner(owner), get_callers(owner), :monitor, {module, fun, args}]
     shutdown = options[:shutdown]
 
-    case start_child_with_spec(supervisor, args, :temporary, shutdown) do
+    case start_child_with_spec(supervisor, [get_owner(owner), :monitor], :temporary, shutdown) do
       {:ok, pid} ->
         if link_type == :link, do: Process.link(pid)
-        ref = Process.monitor(pid)
-        send(pid, {owner, ref})
-        %Task{pid: pid, ref: ref, owner: owner}
+        alias = :erlang.monitor(:process, pid, alias: :demonitor)
+        send(pid, {owner, alias, alias, get_callers(owner), {module, fun, args}})
+        %Task{pid: pid, ref: alias, owner: owner, mfa: {module, fun, length(args)}}
 
       {:error, :max_children} ->
         raise """
@@ -473,19 +550,22 @@ defmodule Task.Supervisor do
   end
 
   defp build_stream(supervisor, link_type, enumerable, fun, options) do
-    shutdown = options[:shutdown]
+    fn acc, acc_fun ->
+      shutdown = options[:shutdown]
+      owner = get_owner(self())
 
-    &Task.Supervised.stream(enumerable, &1, &2, fun, options, fn [owner | _] = callers, mfa ->
-      args = [get_owner(owner), callers, :monitor, mfa]
+      Task.Supervised.stream(enumerable, acc, acc_fun, get_callers(self()), fun, options, fn ->
+        args = [owner, :monitor]
 
-      case start_child_with_spec(supervisor, args, :temporary, shutdown) do
-        {:ok, pid} ->
-          if link_type == :link, do: Process.link(pid)
-          {:ok, link_type, pid}
+        case start_child_with_spec(supervisor, args, :temporary, shutdown) do
+          {:ok, pid} ->
+            if link_type == :link, do: Process.link(pid)
+            {:ok, link_type, pid}
 
-        {:error, :max_children} ->
-          {:error, :max_children}
-      end
-    end)
+          {:error, :max_children} ->
+            {:error, :max_children}
+        end
+      end)
+    end
   end
 end
